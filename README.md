@@ -47,6 +47,10 @@ origin you open the map on.
   drawn last.
 * **Automatic map sizing** and a fixed panel layout, so the map takes the
   available space on any window size.
+* **Fullscreen** with the panels kept beside the map, floating over it, or
+  hidden, whichever you prefer.
+* **Full window mode**, F11 style: the map fills the whole browser window at any
+  aspect ratio and follows it while you resize or maximise.
 * **Optional State and Indicators panels**, rendered as tables with the values
   and units the game reports. Click a row to highlight it; the choice is
   remembered. Each panel has an inline *Update* toggle.
@@ -68,9 +72,41 @@ origin you open the map on.
 | Panel poll rate | 500 ms | How often the state, indicators, objectives and chat panels are fetched |
 | Hide chat and HUD messages | on | Hide the chat, event and damage panels |
 | Hide objectives | off | Hide the mission objectives panel |
+| Full window mode | off | The map fills the whole browser window, as if you pressed F11 |
+| Fullscreen panels | Beside the map | What happens to the side panels while fullscreen: beside the map, over the map, or hidden |
 
-`window.wtmap` is exposed in the page console (`wtmap.settings`, `wtmap.restart`,
-`wtmap.layout`, …) for poking at things by hand.
+### Fullscreen, full window and shortcuts
+
+Three buttons sit at the right of the map panel caption: **⤢** full window mode,
+**⛶** fullscreen and **⚙** options.
+
+| Key | Action |
+| --- | --- |
+| `F` | Toggle fullscreen |
+| `M` | Toggle full window mode |
+| `Escape` | Leave full window mode (or fullscreen, which the browser handles) |
+
+Fullscreen uses the browser's own Fullscreen API, so the browser's usual rules
+apply: it needs a user gesture, `Escape` leaves it, and it ends on its own when
+the tab is switched. The layout is recomputed whenever the state changes, so it
+also reacts to entering fullscreen with the browser's own button or a video
+element.
+
+In **full window mode** the canvas is resized to the exact dimensions of the
+browser window, so on a wide screen the map is stretched to the window's aspect
+ratio rather than staying square. It re-lays out on every resize, so maximising
+the window or pressing the browser's `F11` is enough to make the map fill the
+screen; full window mode itself just also hides the panels and drops the page
+margins. `Escape` or `M` brings the layout back.
+
+![full window mode: the map filling the whole browser window](docs/full-window.png)
+
+*Full window mode, 1280x800: the map fills the window and only the caption bar
+with the readouts and the three buttons is left.*
+
+`window.wtmap` is exposed in the page console (`wtmap.settings`, `wtmap.mode()`,
+`wtmap.fullscreen()`, `wtmap.full_window()`, `wtmap.restart`, `wtmap.layout`, …)
+for poking at things by hand.
 
 ## How it works
 
@@ -141,8 +177,9 @@ The suite drives a real browser and checks the DOM, the request counts per
 endpoint, and the canvas pixels: that aircraft are drawn with the plane glyphs
 at the right angle and position, that off-map contacts are clamped to the edge
 (compared by diffing a frame with and without them), that the map recentres on
-the player, and that settings survive a reload. Screenshots land in
-`test/output/`.
+the player, that full window mode fills the window and follows a resize, that
+each fullscreen panel mode lays out as expected, and that settings survive a
+reload. Screenshots land in `test/output/`.
 
 ### Layout
 

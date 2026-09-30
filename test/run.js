@@ -373,7 +373,148 @@ function compareSummary(want, got, team) {
           vh: document.documentElement.clientHeight};
       });
       eq(size.w, size.h, 'canvas is not square');
-      eq(size.w, Math.max(Math.min(size.vh - 80, size.vw - 310 - 30), 350), 'canvas size');
+      eq(size.w, Math.max(Math.min(size.vh - 34, size.vw - 310 - 30), 350), 'canvas size');
+    });
+
+    /* --- full window and fullscreen modes --------------------------- */
+
+    // Headless Chrome cannot really go fullscreen, so report a fullscreen
+    // element ourselves and let the script react to the event as it would in
+    // a real browser.
+    const set_fullscreen = async (on, panels) => page.evaluate((on, panels) => {
+      if (panels !== null) {
+        window.wtmap.settings.fullscreen_panels = panels;
+      }
+      Object.defineProperty(document, 'fullscreenElement', {
+        configurable: true,
+        get: () => on ? document.documentElement : null,
+      });
+      document.dispatchEvent(new Event('fullscreenchange'));
+    }, on, panels === undefined ? null : panels);
+
+    const set_full_window = on => page.evaluate(on => {
+      window.wtmap.settings.full_window = on ? 1 : 0;
+      localStorage.setItem('wtmap_full_window', on ? 1 : 0);
+      window.wtmap.layout();
+    }, on);
+
+    const layout = () => page.evaluate(() => {
+      const c = document.getElementById('map-canvas');
+      const side = document.getElementById('wtm-sidepanels');
+      return {
+        mode: window.wtmap.mode(),
+        bodyClass: document.body.className,
+        w: c.width,
+        h: c.height,
+        vw: document.documentElement.clientWidth,
+        vh: document.documentElement.clientHeight,
+        canvasLeft: Math.round(c.getBoundingClientRect().left),
+        canvasTop: Math.round(c.getBoundingClientRect().top),
+        sideDisplay: getComputedStyle(side).display,
+        sidePosition: getComputedStyle(side).position,
+        captionBottom: Math.round(document
+          .querySelector('#wtm-map-root .wtm-caption').getBoundingClientRect().bottom),
+        captionVisible: document.querySelector('#wtm-map-root .wtm-caption')
+          .getBoundingClientRect().width > 0,
+      };
+    });
+
+    await test('full window mode fills the browser window', async () => {
+      await page.evaluate(() => window.wtmap.full_window());
+      await sleep(300);
+      const on = await layout();
+      eq(on.mode, 'window', 'layout mode');
+      eq(on.w, on.vw, 'canvas width should be the window width');
+      eq(on.h, on.vh, 'canvas height should be the window height');
+      eq(on.canvasLeft, 0, 'canvas left edge');
+      eq(on.canvasTop, on.captionBottom, 'the canvas should start under the caption');
+      eq(on.sideDisplay, 'none', 'panels should be hidden');
+      assert(on.bodyClass.includes('wtm-mode-window'), 'body class: ' + on.bodyClass);
+      assert(on.captionVisible, 'the caption must stay reachable to leave the mode');
+
+      // It has to follow the window when it is resized or maximised.
+      await page.setViewport({width: 1280, height: 720});
+      await sleep(300);
+      const resized = await layout();
+      eq(resized.w, resized.vw, 'canvas width after resize');
+      eq(resized.h, resized.vh, 'canvas height after resize');
+      await page.setViewport({width: 1500, height: 950});
+      await sleep(300);
+
+      // And the map must actually be painted, not left blank by the resize.
+      const painted = await page.evaluate(() => {
+        const c = document.getElementById('map-canvas');
+        const d = c.getContext('2d', {willReadFrequently: true})
+          .getImageData(0, 0, c.width, c.height).data;
+        let lit = 0;
+        for (let i = 3; i < d.length; i += 4 * 331) {
+          if (d[i] > 0) lit++;
+        }
+        return lit;
+      });
+      assert(painted > 100, 'the map looks blank after the resize: ' + painted);
+    });
+
+    await test('full window mode is left with M or Escape', async () => {
+      // The previous test left it on, so start from a known state.
+      await set_full_window(false);
+      await set_full_window(true);
+      eq((await layout()).mode, 'window', 'entered');
+
+      await page.keyboard.press('KeyM');
+      await sleep(200);
+      eq((await layout()).mode, 'column', 'M should leave full window mode');
+
+      await set_full_window(true);
+      await page.keyboard.press('Escape');
+      await sleep(200);
+      eq((await layout()).mode, 'column', 'Escape should leave full window mode');
+      eq(await page.evaluate(() => localStorage.getItem('wtmap_full_window')),
+        '0', 'full window should be remembered as off');
+    });
+
+    await test('fullscreen keeps the panels in a column when asked', async () => {
+      await set_fullscreen(true, 'column');
+      await sleep(300);
+      const on = await layout();
+      eq(on.mode, 'column', 'layout mode');
+      eq(on.sideDisplay !== 'none', true, 'panels should be visible');
+      eq(on.bodyClass.includes('wtm-mode-column'), true, 'body class: ' + on.bodyClass);
+      assert(on.w < on.vw, 'the map should leave room for the column');
+    });
+
+    await test('fullscreen can float the panels over the map', async () => {
+      await set_fullscreen(true, 'overlay');
+      await sleep(300);
+      const on = await layout();
+      eq(on.mode, 'overlay', 'layout mode');
+      eq(on.sidePosition, 'fixed', 'panels should be fixed on top');
+      eq(on.sideDisplay !== 'none', true, 'panels should be visible');
+      // The map grows to the largest square the window allows and is centred.
+      eq(on.w, on.h, 'the map should stay square');
+      eq(on.w, Math.max(Math.min(on.vh - 34, on.vw - 30), 350), 'map size');
+      assert(on.w > 600, 'the map should be bigger than in the column layout: ' + on.w);
+      near(on.canvasLeft, (on.vw - on.w) / 2, 2, 'map should be centred');
+    });
+
+    await test('fullscreen can hide the panels entirely', async () => {
+      await set_fullscreen(true, 'hidden');
+      await sleep(300);
+      const on = await layout();
+      eq(on.mode, 'hidden', 'layout mode');
+      eq(on.sideDisplay, 'none', 'panels should be hidden');
+      eq(on.w, on.h, 'the map should stay square');
+      eq(on.w, Math.max(Math.min(on.vh - 34, on.vw - 30), 350), 'map size');
+      near(on.canvasLeft, (on.vw - on.w) / 2, 2, 'map should be centred: ' + on.canvasLeft);
+    });
+
+    await test('leaving fullscreen restores the column layout', async () => {
+      await set_fullscreen(false);
+      await sleep(300);
+      const off = await layout();
+      eq(off.mode, 'column', 'layout mode');
+      assert(off.w < off.vw, 'the map should go back beside the column');
+      eq(off.bodyClass.includes('wtm-mode-column'), true, 'body class: ' + off.bodyClass);
     });
 
     await test('caption reports map size, grid and scale', async () => {

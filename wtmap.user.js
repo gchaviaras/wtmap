@@ -51,7 +51,9 @@
         update_indicators: 0,
         update_state: 0,
         hide_chat: 1,             // hide chat and HUD message panels
-        hide_objectives: 0        // show the mission objectives panel
+        hide_objectives: 0,       // show the mission objectives panel
+        fullscreen_panels: 'column', // column | hidden | overlay, while fullscreen
+        full_window: 0            // F11 style mode: the map fills the browser window
     };
 
     var UNITS = {
@@ -60,6 +62,13 @@
         nmi: 0.000539957,
         mi: 0.000621371,
         ft: 3.28084
+    };
+
+    // What happens to the side panels while the map is fullscreen.
+    var PANEL_MODES = {
+        column: 1,     // a column beside the map
+        overlay: 1,    // floating on top of the map
+        hidden: 1      // not shown
     };
 
     var store = (function () {
@@ -123,6 +132,10 @@
         if (!(settings.units in UNITS)) {
             settings.units = DEFAULTS.units;
         }
+        if (!(settings.fullscreen_panels in PANEL_MODES)) {
+            settings.fullscreen_panels = DEFAULTS.fullscreen_panels;
+        }
+        settings.full_window = settings.full_window ? 1 : 0;
     })();
 
     /* ---------------------------------------------------------------- *
@@ -733,7 +746,8 @@
 
     var $ = null;
     var $sidepanels, $map_info, $map_dimension_info, $map_grid_info,
-        $map_scaleinfo, $options, state_panel, indicators_panel;
+        $map_scaleinfo, $options, $map_panel, $fs_button, $fw_button,
+        state_panel, indicators_panel;
 
     // Panels are attached to the document as they are built: jQuery id
     // selectors only see elements that are in the document.
@@ -803,10 +817,25 @@
     function build_ui() {
         var map = make_panel('map', '');
 
-        // Floats are placed in source order, so the gear goes in first to end up
-        // at the right edge of the caption.
-        var $gear = $('<span class="wtm-toggle"></span>').appendTo(map.$caption);
-        $('<button class="wtm-gear" title="WT map options">⚙</button>')
+        // Floats are placed in source order, so the buttons go in first to end
+        // up at the right edge of the caption.
+        var $gear = $('<span class="wtm-toggle wtm-buttons"></span>').appendTo(map.$caption);
+
+        $fw_button = $('<button class="wtm-icon wtm-fullwindow" title="Full window mode, like F11">⤢</button>')
+                .appendTo($gear)
+                .click(function (e) {
+                    e.stopPropagation();
+                    toggle_full_window();
+                });
+
+        $fs_button = $('<button class="wtm-icon wtm-fullscreen" title="Fullscreen (F)">⛶</button>')
+                .appendTo($gear)
+                .click(function (e) {
+                    e.stopPropagation();
+                    toggle_fullscreen();
+                });
+
+        $('<button class="wtm-icon wtm-gear" title="WT map options">⚙</button>')
                 .appendTo($gear)
                 .click(function () {
                     if ($options.is(':visible')) {
@@ -823,6 +852,7 @@
         $map_scaleinfo = $('<span id="wtm-mapscale"></span>').appendTo($map_info);
 
         map.$root.appendTo(doc.body);
+        $map_panel = map.$root;
 
         // The map canvas and its caption move into our panel; the original
         // wrapper is left empty and hidden by the stylesheet.
@@ -891,6 +921,17 @@
                 '<td><input type="checkbox" id="opt_hide_chat"></td></tr>' +
                 '<tr><td><label for="opt_hide_objectives">Hide objectives</label></td>' +
                 '<td><input type="checkbox" id="opt_hide_objectives"></td></tr>' +
+                '<tr><td><label for="opt_full_window">Full window mode</label></td>' +
+                '<td><input type="checkbox" id="opt_full_window"></td></tr>' +
+                '<tr><td><label for="opt_fullscreen_panels">Fullscreen panels</label></td>' +
+                '<td><select id="opt_fullscreen_panels">' +
+                '<option value="column">Beside the map</option>' +
+                '<option value="overlay">Over the map</option>' +
+                '<option value="hidden">Hidden</option>' +
+                '</select></td></tr>' +
+                '<tr><td>Shortcuts</td><td>' +
+                '<span class="wtm-note">F fullscreen, M full window, Escape leaves full window' +
+                '</span></td></tr>' +
                 '</table>' +
                 '<p id="wtm-options-buttons">' +
                 '<button id="wtm-save">Save</button> ' +
@@ -922,6 +963,9 @@
                     DEFAULTS.panels_update_rate, 20, 60000));
             store.set('hide_chat', $('#opt_hide_chat').prop('checked') ? 1 : 0);
             store.set('hide_objectives', $('#opt_hide_objectives').prop('checked') ? 1 : 0);
+            store.set('full_window', $('#opt_full_window').prop('checked') ? 1 : 0);
+            store.set('fullscreen_panels',
+                    $('#opt_fullscreen_panels').val() || DEFAULTS.fullscreen_panels);
             reload_settings();
             save_scale();
             apply_panels();
@@ -984,6 +1028,8 @@
         $('#opt_panels_rate').val(settings.panels_update_rate);
         $('#opt_hide_chat').prop('checked', !!settings.hide_chat);
         $('#opt_hide_objectives').prop('checked', !!settings.hide_objectives);
+        $('#opt_full_window').prop('checked', !!settings.full_window);
+        $('#opt_fullscreen_panels').val(settings.fullscreen_panels);
         $('#opt_icon_size').trigger('input');
     }
 
@@ -1007,6 +1053,10 @@
         if (!(settings.units in UNITS)) {
             settings.units = DEFAULTS.units;
         }
+        if (!(settings.fullscreen_panels in PANEL_MODES)) {
+            settings.fullscreen_panels = DEFAULTS.fullscreen_panels;
+        }
+        settings.full_window = settings.full_window ? 1 : 0;
     }
 
     /* ---------------------------------------------------------------- *
@@ -1014,32 +1064,170 @@
      * ---------------------------------------------------------------- */
 
     var SIDE_PANEL_WIDTH = 310;
+    var CAPTION_HEIGHT = 24;
+
+    /* ---------------------------------------------------------------- *
+     * layout modes                                                      *
+     *                                                                    *
+     * column   - map beside the side panels (the default)                *
+     * overlay  - map fills the window, panels float on top of it         *
+     * hidden   - map fills the window, no panels                         *
+     * window   - F11 style: the map fills the whole browser window       *
+     * ---------------------------------------------------------------- */
+
+    function is_fullscreen() {
+        return !!(doc.fullscreenElement || doc.webkitFullscreenElement ||
+                  doc.mozFullScreenElement || doc.msFullscreenElement);
+    }
+
+    function layout_mode() {
+        if (settings.full_window) {
+            return 'window';
+        }
+        if (is_fullscreen()) {
+            return settings.fullscreen_panels === 'overlay' ? 'overlay' :
+                   settings.fullscreen_panels === 'hidden' ? 'hidden' : 'column';
+        }
+        return 'column';
+    }
+
+    function apply_layout_class(mode) {
+        var body = doc.body;
+        ['column', 'overlay', 'hidden', 'window'].forEach(function (m) {
+            body.classList[mode === m ? 'add' : 'remove']('wtm-mode-' + m);
+        });
+        body.classList[mode === 'window' ? 'add' : 'remove']('wtm-fullscreen-mode');
+        if ($fs_button) {
+            $fs_button.text(is_fullscreen() ? '\u25f1' : '\u26f6')
+                .attr('title', is_fullscreen() ? 'Leave fullscreen (F)' : 'Fullscreen (F)');
+        }
+        if ($fw_button) {
+            $fw_button.toggleClass('on', !!settings.full_window)
+                .attr('title', settings.full_window ?
+                    'Leave full window mode' : 'Full window mode, like F11');
+        }
+    }
 
     function position_panels() {
         if (!_canvas) {
             return;
         }
+        var mode = layout_mode();
+        apply_layout_class(mode);
+
         var view_w = doc.documentElement.clientWidth;
         var view_h = doc.documentElement.clientHeight;
 
-        var size = Math.max(Math.min(view_h - 80, view_w - SIDE_PANEL_WIDTH - 30), 350);
-        size = Math.min(size, 1600);
+        var width, height, size;
+        if (mode === 'window') {
+            // Follow the browser window exactly, whatever its aspect ratio.
+            width = view_w;
+            height = view_h;
+            size = Math.max(width, height);
+        } else if (mode === 'column') {
+            size = Math.max(Math.min(view_h - CAPTION_HEIGHT - 10,
+                    view_w - SIDE_PANEL_WIDTH - 30), 350);
+            size = Math.min(size, 1600);
+            width = size;
+            height = size;
+        } else {
+            // overlay and hidden: as large as the window allows, capped so it
+            // does not become unwieldy on very large displays.
+            size = Math.max(Math.min(view_h - CAPTION_HEIGHT - 10, view_w - 30), 350);
+            size = Math.min(size, 1600);
+            width = size;
+            height = size;
+        }
 
-        if (_canvas.width !== size || _canvas.height !== size) {
-            var factor = _canvas.width ? size / _canvas.width : 1;
-            _canvas.width = size;
-            _canvas.height = size;
+        if (_canvas.width !== width || _canvas.height !== height) {
+            // map_pan is in device pixels, so it has to follow the size change.
+            var factor_x = _canvas.width ? width / _canvas.width : 1;
+            var factor_y = _canvas.height ? height / _canvas.height : 1;
+            _canvas.width = width;
+            _canvas.height = height;
             if (W.map_pan && isFinite(W.map_pan[0])) {
-                W.map_pan[0] *= factor;
-                W.map_pan[1] *= factor;
+                W.map_pan[0] *= factor_x;
+                W.map_pan[1] *= factor_y;
+            }
+            if (W.clampMapPan) {
+                W.clampMapPan();
             }
             if (W.redraw_map) {
                 W.redraw_map(0.0);
             }
         }
 
-        $sidepanels.css('left', size + 12);
+        if (mode === 'column') {
+            $sidepanels.css('left', size + 12);
+            $map_panel.css('marginLeft', 0);
+        } else if (mode === 'overlay' || mode === 'hidden') {
+            // Centre the map; the panels sit on top of it. Measured rather than
+            // assumed, because the body margin and the panel border both count.
+            var style = W.getComputedStyle(doc.body);
+            var body_margin = (parseFloat(style.marginLeft) || 0) +
+                               (parseFloat(style.marginRight) || 0);
+            var panel_width = $map_panel[0].offsetWidth || size;
+            $sidepanels.css('left', '');
+            $map_panel.css('marginLeft',
+                    Math.max(Math.round((view_w - body_margin - panel_width) / 2), 0));
+        } else {
+            $sidepanels.css('left', '');
+            $map_panel.css('marginLeft', 0);
+        }
+
         update_scale();
+    }
+
+    /* ---------------------------------------------------------------- *
+     * fullscreen and full window toggles                                 *
+     * ---------------------------------------------------------------- */
+
+    function request_fullscreen() {
+        var el = doc.documentElement;
+        var fn = el.requestFullscreen || el.webkitRequestFullscreen ||
+                 el.mozRequestFullScreen || el.msRequestFullscreen;
+        if (!fn) {
+            log('this browser has no fullscreen API');
+            return;
+        }
+        try {
+            var result = fn.call(el);
+            if (result && typeof result.catch === 'function') {
+                result.catch(log);
+            }
+        } catch (e) {
+            log(e);
+        }
+    }
+
+    function exit_fullscreen() {
+        var fn = doc.exitFullscreen || doc.webkitExitFullscreen ||
+                 doc.mozCancelFullScreen || doc.msExitFullscreen;
+        if (!fn) {
+            return;
+        }
+        try {
+            var result = fn.call(doc);
+            if (result && typeof result.catch === 'function') {
+                result.catch(log);
+            }
+        } catch (e) {
+            log(e);
+        }
+    }
+
+    function toggle_fullscreen() {
+        if (is_fullscreen()) {
+            exit_fullscreen();
+        } else {
+            request_fullscreen();
+        }
+    }
+
+    function toggle_full_window() {
+        settings.full_window = settings.full_window ? 0 : 1;
+        store.set('full_window', settings.full_window);
+        position_panels();
     }
 
     function load_fonts() {
@@ -1123,6 +1311,38 @@
 
         position_panels();
         W.addEventListener('resize', position_panels);
+        // Some browsers report the new size only after a frame.
+        W.addEventListener('orientationchange', position_panels);
+
+        // Fullscreen can be entered or left from the keyboard, the browser's own
+        // menu or Escape, so re-lay out whenever the state changes.
+        ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange',
+            'MSFullscreenChange'].forEach(function (type) {
+            doc.addEventListener(type, position_panels);
+        });
+
+        doc.addEventListener('keydown', function (e) {
+            if (e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey) {
+                return;
+            }
+            var tag = (e.target && e.target.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || tag === 'select' ||
+                (e.target && e.target.isContentEditable)) {
+                return;
+            }
+            if (e.key === 'f' || e.key === 'F') {
+                e.preventDefault();
+                toggle_fullscreen();
+            } else if (e.key === 'm' || e.key === 'M') {
+                e.preventDefault();
+                toggle_full_window();
+            } else if (e.key === 'Escape' && settings.full_window) {
+                e.preventDefault();
+                settings.full_window = 0;
+                store.set('full_window', 0);
+                position_panels();
+            }
+        });
 
         // Handle for tweaking things from the browser console.
         W.wtmap = {
@@ -1131,7 +1351,10 @@
             save_scale: save_scale,
             reload: reload_settings,
             restart: start_pollers,
-            layout: position_panels
+            layout: position_panels,
+            mode: layout_mode,
+            fullscreen: toggle_fullscreen,
+            full_window: toggle_full_window
         };
 
         load_fonts().then(function () {
@@ -1203,10 +1426,12 @@
             ".wtm-toggle { float: right; white-space: nowrap; padding-left: 1em; }",
             ".wtm-toggle input { margin: 0 5px 0 3px; position: relative; top: 2px; }",
             ".wtm-toggle label { position: relative; top: 2px; }",
-            ".wtm-gear { cursor: pointer; font-size: 13px; line-height: 15px;",
-            "padding: 0 5px; margin: 2px 0; color: #ccc; background: #4a4a4a;",
-            "border: 1px solid #666; border-radius: 2px; }",
-            ".wtm-gear:hover { background: #5a5a5a; color: #fff; }",
+            ".wtm-icon { cursor: pointer; font-size: 13px; line-height: 15px;",
+            "padding: 0 5px; margin: 2px 0 0 3px; color: #ccc; background: #4a4a4a;",
+            "border: 1px solid #666; border-radius: 2px; vertical-align: middle; }",
+            ".wtm-icon:hover { background: #5a5a5a; color: #fff; }",
+            ".wtm-icon.on { background: #2b6cb0; border-color: #4a90d9; color: #fff; }",
+            ".wtm-buttons { display: flex; gap: 3px; }",
 
             "table.wtm-data { width: 300px; border-collapse: collapse;",
             "table-layout: fixed; position: relative; }",
@@ -1246,6 +1471,28 @@
             "#wtm-options-buttons { margin: 15px 0 0; }",
             "#wtm-options-buttons button { cursor: pointer; position: relative; top: -1px; }",
             "#wtm-status { color: #8f8; padding-left: 10px; }",
+
+            /* --- layout modes ---------------------------------------------------- */
+            "body.wtm-fullscreen-mode { overflow: hidden; }",
+            "body.wtm-mode-hidden #wtm-sidepanels,",
+            "body.wtm-mode-window #wtm-sidepanels { display: none; }",
+            "body.wtm-mode-overlay #wtm-sidepanels { position: fixed; top: 30px;",
+            "right: 8px; left: auto; z-index: 30; width: 305px;",
+            "max-height: calc(100% - 40px); overflow: auto; opacity: .92; }",
+            "body.wtm-mode-overlay #wtm-sidepanels:hover { opacity: 1; }",
+            "body.wtm-mode-overlay .wtm-panel,",
+            "body.wtm-mode-overlay .wtm-adopted { background: rgba(20, 20, 20, .8); }",
+            "body.wtm-mode-window #wtm-map-root { border: none; }",
+            "body.wtm-mode-window { margin: 0; }",
+            "body.wtm-mode-window #wtm-map-root:after,",
+            "body.wtm-mode-overlay #wtm-map-root:after,",
+            "body.wtm-mode-hidden #wtm-map-root:after { display: none !important; }",
+            "body.wtm-mode-window #wtm-map,",
+            "body.wtm-mode-overlay #wtm-map,",
+            "body.wtm-mode-hidden #wtm-map { line-height: 0; }",
+            /* the caption stays reachable so the modes can be left again */
+            "body.wtm-mode-window #wtm-map-root,",
+            "body.wtm-mode-overlay #wtm-map-root { z-index: 10; }",
 
             "#map-root, #indicators-root, #state-root { display: none !important; }",
             "#draghandle { cursor: default !important; }",
