@@ -1,0 +1,3 @@
+loc_tbl = loc_tbl || {};
+loc_tbl["map/primary_objectives"] = "Primary objectives";
+loc_tbl["map/secondary_objectives"] = "Secondary objectives";

@@ -1,0 +1,18 @@
+{
+  "name": "wtmap-userscript",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GreaseMonkey userscript that enhances the War Thunder browser map, a port of the WT map Chrome extension",
+  "license": "MIT",
+  "scripts": {
+    "test": "node test/run.js",
+    "test:headed": "node test/run.js --headed",
+    "test:keep": "node test/run.js --keep",
+    "fixture": "python3 test/server.py",
+    "capture": "python3 test/capture.py",
+    "lint": "node --check wtmap.user.js && node --check test/run.js"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}
