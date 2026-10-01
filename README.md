@@ -60,7 +60,9 @@ origin you open the map on.
   hidden, whichever you prefer.
 * **Full window mode**, F11 style: the map grows to fill the browser window and
   follows it while you resize or maximise, staying square so it is never
-  distorted.
+  distorted. On a window that is not square the map is magnified to cover it and
+  you drag to the edges, or the whole map is shown with the spare width left as
+  background, whichever you prefer.
 * **Optional State and Indicators panels**, rendered as tables with the values
   and units the game reports. Click a row to highlight it; the choice is
   remembered. Each panel has an inline *Update* toggle.
@@ -76,7 +78,7 @@ origin you open the map on.
 | --- | --- | --- |
 | Plane icon size | 25 | Icon size in pixels |
 | Icon edge | Shadow only | How contact icons are edged: shadow only, thin outline, both, none, or a heavy outline. Applies to the aircraft and to the map's own tank and structure glyphs |
-| Centre map on player | on | Follow the player |
+| Centre map on player | on | Follow the player. In full window mode with *Fill the window*, the first drag turns this off, since a cropped map cannot both follow and be panned |
 | Units | km | km, mi, nmi, m or ft for the distance and size readouts |
 | Map scale | 10 | Metres per map unit. The game uses a 0..2048 grid on 20 km maps and 0..4096 on 40 km maps, so 10 m per unit makes the readouts correct on both |
 | Object poll rate | 50 ms | How often contacts are fetched; raise it to cut CPU and network use |
@@ -84,6 +86,7 @@ origin you open the map on.
 | Hide chat and HUD messages | on | Hide the chat, event and damage panels |
 | Hide objectives | off | Hide the mission objectives panel |
 | Full window mode | off | The map fills the whole browser window, as if you pressed F11 |
+| Full window fill | Fill the window | How a window that is not square is filled: magnify the map to cover it and drag to the edges, or keep the map square and leave the spare width as background |
 | Fullscreen panels | Beside the map | What happens to the side panels while fullscreen: beside the map, over the map, or hidden |
 
 ### Fullscreen, full window and shortcuts
@@ -103,18 +106,29 @@ the tab is switched. The layout is recomputed whenever the state changes, so it
 also reacts to entering fullscreen with the browser's own button or a video
 element.
 
-In **full window mode** the panels and the page margins go away and the map is
-sized to the largest square the window allows, centred, so the map image is never
-distorted. It re-lays out on every resize, so maximising the window or pressing
-the browser's `F11` is enough to make the map fill the screen; full window mode
-itself just also hides the panels. `Escape` or `M` brings the layout back.
+In **full window mode** the panels and the page margins go away. It re-lays out
+on every resize, so maximising the window or pressing the browser's `F11` is
+enough to make the map fill the screen; full window mode itself just also hides
+the panels. `Escape` or `M` brings the layout back.
+
+The canvas has to stay square in every mode, because the map image is square and
+the game stretches it into the canvas and places every contact as a fraction of
+its width and height. So a window that is not square has to be filled one of two
+ways, and **Full window fill** chooses which:
+
+* **Fill the window** (the default) makes the canvas as large as the window needs
+  and lets the window crop the overflow. The map is magnified by the window's
+  aspect ratio, fills it edge to edge with no bars, and you drag the map to reach
+  the rest of it. The wheel still zooms as usual.
+* **Keep the map square** shows the whole map with the spare width as page
+  background.
 
 ![full window mode: the map filling the browser window](docs/full-window.png)
 
-*Full window mode, 1280x800: the map fills the window's short side and only the
-caption bar with the readouts and the three buttons is left. On a wide window the
-spare width sits either side as page background, because the map image is square
-and stretching it would make the map unreadable.*
+*Full window mode, 1280x800 with Fill the window: the map reaches both edges and
+only the caption bar with the readouts and the three buttons is left. The map is
+magnified to cover a window that is wider than it is tall, so the top and bottom
+are cropped; drag to see them.*
 
 `window.wtmap` is exposed in the page console (`wtmap.settings`, `wtmap.mode()`,
 `wtmap.fullscreen()`, `wtmap.full_window()`, `wtmap.restart`, `wtmap.layout`, …)

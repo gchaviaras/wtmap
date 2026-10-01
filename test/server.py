@@ -48,6 +48,12 @@ START = time.time()
 HITS = {}
 PLANES_MODE = False
 
+# Only the test browser's requests are counted. The fixture listens on a fixed
+# port and a real browser tab left open on the same page polls it too, which
+# silently inflates every hit count and makes the polling test measure whatever
+# else is running on the machine.
+COUNT_UA = 'HeadlessChrome'
+
 # Scripts the map page loads; served from asset/ if captured, else from shims/.
 VENDOR = [
     'jquery-1.10.1.min.js',
@@ -195,7 +201,8 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path
         query = parse_qs(url.query)
 
-        HITS[path] = HITS.get(path, 0) + 1
+        if COUNT_UA in self.headers.get('User-Agent', ''):
+            HITS[path] = HITS.get(path, 0) + 1
 
         # --- fixture control -------------------------------------------
         if path == '/__version':

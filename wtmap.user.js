@@ -54,7 +54,8 @@
         hide_chat: 1,             // hide chat and HUD message panels
         hide_objectives: 0,       // show the mission objectives panel
         fullscreen_panels: 'column', // column | hidden | overlay, while fullscreen
-        full_window: 0            // F11 style mode: the map fills the browser window
+        full_window: 0,           // F11 style mode: the map fills the browser window
+        full_window_fill: 'cover',  // cover | bars, see FILL_MODES
     };
 
     var UNITS = {
@@ -74,6 +75,15 @@
         both: 1,      // hairline edge and shadow
         shadow: 1,    // shadow only, the default
         outline: 1    // the heavier edge, as it was
+    };
+
+    // How full window mode fills a window that is not square. The canvas has to
+    // be square, because the game stretches the map image into the canvas and
+    // places every object as a fraction of its width and height, so the two
+    // options differ only in how big that square is.
+    var FILL_MODES = {
+        cover: 1,    // square as large as the window needs, window crops it
+        bars: 1      // square as large as the short side, spare width left empty
     };
 
     // What happens to the side panels while the map is fullscreen.
@@ -149,6 +159,9 @@
         }
         if (!(settings.icon_edge in EDGE_MODES)) {
             settings.icon_edge = DEFAULTS.icon_edge;
+        }
+        if (!(settings.full_window_fill in FILL_MODES)) {
+            settings.full_window_fill = DEFAULTS.full_window_fill;
         }
         settings.full_window = settings.full_window ? 1 : 0;
     })();
@@ -541,8 +554,15 @@
     }
 
     function center_view(x, y, c_width, c_height) {
-        W.map_pan[0] = -(x * c_width * W.map_scale) + c_width / 2;
-        W.map_pan[1] = -(y * c_width * W.map_scale) + c_height / 2;
+        // In cover mode the window shows a band of the canvas rather than all of
+        // it, so the player has to be centred in the band to be centred on
+        // screen; aiming at the middle of the canvas would leave them below the
+        // bottom edge of the window.
+        var crop = cover_crop();
+        var centre_x = c_width / 2;
+        var centre_y = crop ? crop.band_y1 / 2 : c_height / 2;
+        W.map_pan[0] = -(x * c_width * W.map_scale) + centre_x;
+        W.map_pan[1] = -(y * c_width * W.map_scale) + centre_y;
         W.clampMapPan();
     }
 
@@ -552,12 +572,52 @@
         }
 
         // --- map follows the player ---
+        // Following puts the player in the middle of the view, which means any
+        // drag is undone on the next frame. That is survivable when the whole
+        // map is on screen, but in cover mode the cropped map is all the user
+        // can see, so dragging has to stick: the first drag turns the follow
+        // off, and the option says so rather than quietly not applying.
+        var was_dragging = false;
         var _draw_player = W.draw_player;
         W.draw_player = function (canvas, ctx, item, dt) {
+            if (W.isDraggingMap && !was_dragging && cover_crop() && settings.map_center) {
+                was_dragging = true;
+                settings.map_center = 0;
+                store.set('map_center', 0);
+                if ($options) {
+                    $('#opt_map_center').prop('checked', false);
+                }
+            }
+            was_dragging = !!W.isDraggingMap;
             if (!W.isDraggingMap && settings.map_center) {
                 center_view(item.x, item.y, canvas.width, canvas.height);
             }
             return _draw_player.apply(this, arguments);
+        };
+
+        // --- pan far enough to reach every part of a cropped map ---
+        // The game anchors the zoomed image at the top left and clamps the pan
+        // to -(scale - 1) * size, so at scale 1 the map cannot be moved at all.
+        // That is right for a canvas you can see all of, and wrong here: the
+        // window only shows the middle of the canvas, so the spare width and
+        // height are exactly the distance the map has to be able to travel.
+        // Bounded by that, the image always covers what is visible and an edge
+        // can never show.
+        var _clamp_map_pan = W.clampMapPan;
+        W.clampMapPan = function () {
+            var crop = cover_crop();
+            if (!crop || !_canvas || !_canvas.width) {
+                return _clamp_map_pan.apply(this, arguments);
+            }
+            var k = W.map_scale || 1;
+            // The image spans [pan, pan + side * scale]; it has to cover the band
+            // the window shows, or an edge of the map would show.
+            [[0, crop.band_x0, crop.band_x1], [1, crop.band_y0, crop.band_y1]]
+                .forEach(function (axis) {
+                    var pan = W.map_pan[axis[0]];
+                    W.map_pan[axis[0]] = Math.min(
+                            Math.max(pan, axis[2] - crop.side * k), axis[1]);
+                });
         };
 
         // --- aircraft artwork, and the map's own glyphs with the same edge ---
@@ -1192,6 +1252,13 @@
                 '<td><input type="checkbox" id="opt_hide_objectives"></td></tr>' +
                 '<tr><td><label for="opt_full_window">Full window mode</label></td>' +
                 '<td><input type="checkbox" id="opt_full_window"></td></tr>' +
+                '<tr><td><label for="opt_full_window_fill">Full window fill</label></td>' +
+                '<td><select id="opt_full_window_fill">' +
+                '<option value="cover">Fill the window</option>' +
+                '<option value="bars">Keep the map square</option>' +
+                '</select><span class="wtm-note">Fill the window magnifies the ' +
+                'map by the window\'s aspect ratio; drag to reach the edges' +
+                '</span></td></tr>' +
                 '<tr><td><label for="opt_fullscreen_panels">Fullscreen panels</label></td>' +
                 '<td><select id="opt_fullscreen_panels">' +
                 '<option value="column">Beside the map</option>' +
@@ -1245,6 +1312,8 @@
             store.set('hide_chat', $('#opt_hide_chat').prop('checked') ? 1 : 0);
             store.set('hide_objectives', $('#opt_hide_objectives').prop('checked') ? 1 : 0);
             store.set('full_window', $('#opt_full_window').prop('checked') ? 1 : 0);
+            store.set('full_window_fill',
+                    $('#opt_full_window_fill').val() || DEFAULTS.full_window_fill);
             store.set('fullscreen_panels',
                     $('#opt_fullscreen_panels').val() || DEFAULTS.fullscreen_panels);
             reload_settings();
@@ -1311,6 +1380,7 @@
         $('#opt_hide_chat').prop('checked', !!settings.hide_chat);
         $('#opt_hide_objectives').prop('checked', !!settings.hide_objectives);
         $('#opt_full_window').prop('checked', !!settings.full_window);
+        $('#opt_full_window_fill').val(settings.full_window_fill);
         $('#opt_fullscreen_panels').val(settings.fullscreen_panels);
         $('#opt_icon_size').trigger('input');
     }
@@ -1340,6 +1410,9 @@
         }
         if (!(settings.icon_edge in EDGE_MODES)) {
             settings.icon_edge = DEFAULTS.icon_edge;
+        }
+        if (!(settings.full_window_fill in FILL_MODES)) {
+            settings.full_window_fill = DEFAULTS.full_window_fill;
         }
         settings.full_window = settings.full_window ? 1 : 0;
     }
@@ -1393,6 +1466,34 @@
         }
     }
 
+    // In cover mode the canvas square is larger than the window and the window
+    // shows only a band of it, so the map has to be pannable across the slack
+    // the crop leaves. Returns that band in canvas coordinates, or null when the
+    // canvas is not being cropped.
+    function cover_crop() {
+        if (layout_mode() !== 'window' || !_canvas ||
+            settings.full_window_fill !== 'cover') {
+            return null;
+        }
+        var view_w = doc.documentElement.clientWidth;
+        var view_h = doc.documentElement.clientHeight;
+        // The caption sits above the canvas in the flow, so the band the window
+        // shows starts at the top of the canvas and is centred across it.
+        var caption = caption_height();
+        return {
+            side: _canvas.width,
+            band_x0: (_canvas.width - view_w) / 2,
+            band_x1: (_canvas.width + view_w) / 2,
+            band_y0: 0,
+            band_y1: Math.max(view_h - caption, 1)
+        };
+    }
+
+    function caption_height() {
+        var caption = $map_panel.find('.wtm-caption');
+        return caption.length ? (caption.outerHeight() || CAPTION_HEIGHT) : CAPTION_HEIGHT;
+    }
+
     function position_panels() {
         if (!_canvas) {
             return;
@@ -1404,7 +1505,16 @@
         var view_h = doc.documentElement.clientHeight;
 
         var width, height, size;
-        if (mode === 'window') {
+        if (mode === 'window' && settings.full_window_fill === 'cover') {
+            // Square as large as the window needs, so the map covers the whole
+            // window with no bars and the window crops the overflow. The map is
+            // magnified by the window's aspect ratio and the visible part is
+            // whatever map_pan has brought into the band; see cover_crop for the
+            // slack that allows.
+            size = Math.max(view_w, view_h - caption_height(), 350);
+            width = size;
+            height = size;
+        } else if (mode === 'window') {
             // The map image is square and the game stretches it to the canvas
             // (drawImage(image, 0, 0, canvas.width, canvas.height)), so a canvas
             // shaped like the window would distort the map. Fit the largest
@@ -1461,11 +1571,17 @@
             var body_margin = (parseFloat(style.marginLeft) || 0) +
                                (parseFloat(style.marginRight) || 0);
             var panel_width = $map_panel[0].offsetWidth || size;
+            var cover = cover_crop() !== null;
             $sidepanels.css('left', '');
-            $map_panel.css('marginLeft',
-                    Math.max(Math.round((view_w - body_margin - panel_width) / 2), 0));
-            $map_panel.css('marginTop', mode === 'window' ?
-                    Math.max(Math.round((view_h - $map_panel[0].offsetHeight) / 2), 0) : 0);
+            var centring = Math.round((view_w - body_margin - panel_width) / 2);
+            // In cover mode the square is larger than the window on purpose, so
+            // the margin has to be allowed to go negative to straddle it.
+            $map_panel.css('marginLeft', cover ? centring :
+                    Math.max(centring, 0));
+            $map_panel.css('marginTop', cover ?
+                    // Below the caption, which has to stay reachable to leave the
+                    // mode; the canvas overflows the bottom of the window.
+                    caption_height() : 0);
         } else {
             $sidepanels.css('left', '');
             $map_panel.css('marginLeft', 0);

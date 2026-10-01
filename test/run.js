@@ -456,56 +456,180 @@ function compareSummary(want, got, team) {
         sidePosition: getComputedStyle(side).position,
         captionBottom: Math.round(document
           .querySelector('#wtm-map-root .wtm-caption').getBoundingClientRect().bottom),
+        captionHeight: Math.round(document
+          .querySelector('#wtm-map-root .wtm-caption').getBoundingClientRect().height),
         captionVisible: document.querySelector('#wtm-map-root .wtm-caption')
           .getBoundingClientRect().width > 0,
       };
     });
 
-    // The map image is square and the game stretches it to the canvas, so the
-    // canvas has to stay square in every mode or the map comes out distorted.
-    await test('full window mode fits a square map without distorting it', async () => {
+    // The map image is square and the game stretches it into the canvas, so the
+    // canvas has to stay square in every mode or the map is distorted. That
+    // leaves two ways to fill a window that is not square: a square as big as
+    // the short side, with the spare width left as page background, or a square
+    // as big as the long side with the window cropping the overflow.
+    const set_fill = fill => page.evaluate(fill => {
+      window.wtmap.settings.full_window_fill = fill;
+      localStorage.setItem('wtmap_full_window_fill', fill);
+      window.wtmap.layout();
+    }, fill);
+
+    // Pans the map to each end of its travel on both axes and samples the four
+    // corners of the band the window actually shows, which in cover mode is a
+    // crop of a larger canvas. A transparent corner means the map has been
+    // panned off its own edge, which is the one way this can go wrong: the
+    // spare width is only safe to spend as far as the crop leaves room.
+    const pan_to_the_corners = () => page.evaluate(() => {
+      const c = document.getElementById('map-canvas');
+      const ctx = c.getContext('2d', {willReadFrequently: true});
+      const view_w = document.documentElement.clientWidth;
+      const view_h = document.documentElement.clientHeight;
+      const caption = document.querySelector('#wtm-map-root .wtm-caption')
+        .getBoundingClientRect().height;
+      const x0 = Math.round((c.width - view_w) / 2) + 2;
+      const x1 = Math.round((c.width + view_w) / 2) - 3;
+      const y1 = Math.round(view_h - caption) - 3;
+
+      const corners = () => {
+        const d = ctx.getImageData(0, 0, c.width, c.height).data;
+        const alpha = (x, y) => d[(y * c.width + x) * 4 + 3];
+        return [alpha(x0, 2), alpha(x1, 2), alpha(x0, y1), alpha(x1, y1)];
+      };
+
+      const report = {slack: [c.width - view_w, c.height - (view_h - caption)],
+                      stops: []};
+      for (let axis = 0; axis < 2; axis++) {
+        for (const wanted of [-100000, 100000]) {
+          window.map_pan[axis] = wanted;
+          window.clampMapPan();
+          window.redraw_map(0.0);
+          report.stops.push({axis, pan: Math.round(window.map_pan[axis]),
+                             corners: corners()});
+        }
+        window.map_pan[axis] = 0;
+        window.clampMapPan();
+      }
+      window.redraw_map(0.0);
+      return report;
+    });
+
+    await test('full window mode fills the window without distorting the map', async () => {
+      await set_fill('cover');
       await page.evaluate(() => window.wtmap.full_window());
       await sleep(300);
       const on = await layout();
       eq(on.mode, 'window', 'layout mode');
       eq(on.w, on.h, 'the canvas must stay square, the map image is');
-      assert(on.w <= Math.min(on.vw, on.vh),
-        'the square should fit the window: ' + on.w + ' in ' + on.vw + 'x' + on.vh);
-      // As large as the window allows: the short side is what limits it.
-      near(on.w, Math.min(on.vw, on.vh), 2, 'the map should fill the short side');
-      // Centred, not pushed against an edge with a gap beside it.
-      const gap_left = on.canvasLeft;
-      const gap_right = on.vw - on.canvasLeft - on.w;
-      near(gap_left, gap_right, 2, 'the map should be centred horizontally');
-      assert(on.canvasTop >= on.captionBottom - 1, 'the canvas should stay under the caption');
+      // Big enough to cover the window, which is what removes the bars.
+      assert(on.w >= on.vw, 'the canvas should span the window width: ' +
+        on.w + ' in ' + on.vw);
+      assert(on.w >= on.vh - on.captionHeight,
+        'the canvas should span the window height below the caption: ' + on.w +
+        ' for ' + (on.vh - on.captionHeight));
+      assert(on.canvasLeft <= 1 && on.canvasLeft + on.w >= on.vw - 1,
+        'the map should reach both edges, no bars: left ' + on.canvasLeft);
+      assert(on.canvasTop >= on.captionBottom - 1,
+        'the canvas should start under the caption, not over it');
       eq(on.sideDisplay, 'none', 'panels should be hidden');
       assert(on.bodyClass.includes('wtm-mode-window'), 'body class: ' + on.bodyClass);
       assert(on.captionVisible, 'the caption must stay reachable to leave the mode');
 
+      // The spare width and height are what the map has to be able to travel,
+      // and it can do that at zoom 1 only because the pan clamp was widened.
+      // Dragging to either end must never expose an empty edge.
+      const travel = await pan_to_the_corners();
+      assert(travel.slack[0] + travel.slack[1] > 20,
+        'a window this shape should leave something to pan: ' + travel.slack);
+      for (const stop of travel.stops) {
+        stop.corners.forEach((a, i) =>
+          assert(a === 255, 'the map runs off its own edge at corner ' + i +
+            ' (axis ' + stop.axis + ', pan ' + stop.pan + '): alpha ' + a));
+      }
+
+      // Panning only sticks if it survives a redraw, and with "centre map on
+      // player" on it would not: the follow re-centres every frame. So the first
+      // drag turns the follow off, which the option has to show.
+      const drag = await page.evaluate(() => {
+        const out = {};
+        out.followBefore = window.wtmap.settings.map_center;
+        window.isDraggingMap = true;                 // what the game sets on dragstart
+        window.map_pan[1] = -400;
+        window.redraw_map(0.0);
+        window.isDraggingMap = false;
+        window.redraw_map(0.0);                      // the frame after the drag
+        out.followAfter = window.wtmap.settings.map_center;
+        out.stored = localStorage.getItem('wtmap_map_center');
+        out.panHeld = Math.round(window.map_pan[1]);
+        return out;
+      });
+      eq(drag.followBefore, 1, 'the map should start out following the player');
+      eq(drag.followAfter, 0, 'a drag should turn the follow off in cover mode');
+      eq(drag.stored, '0', 'and it should be remembered');
+      near(drag.panHeld, -400, 2, 'the pan should survive the frame after a drag');
+      assert(drag.panHeld < -10,
+        'the map should be pannable at zoom 1, the crop slack is unusable');
+
       // It has to follow the window when it is resized or maximised, in either
-      // orientation, and stay square throughout.
+      // orientation, staying square and still covering both edges.
       for (const [w, h] of [[1280, 720], [720, 1280], [1500, 950]]) {
         await page.setViewport({width: w, height: h});
         await sleep(300);
         const r = await layout();
         eq(r.w, r.h, `the canvas must stay square at ${w}x${h}`);
-        assert(r.w <= Math.min(w, h) + 1, `the square should fit at ${w}x${h}`);
-        near(r.canvasLeft, w - r.canvasLeft - r.w, 2,
-          `the map should be centred at ${w}x${h}`);
+        assert(r.canvasLeft <= 1 && r.canvasLeft + r.w >= w - 1,
+          `the map should reach both edges at ${w}x${h}`);
+        const seen = await pan_to_the_corners();
+        seen.stops.forEach(stop => stop.corners.forEach((a, i) =>
+          assert(a === 255, `empty corner ${i} at ${w}x${h}, axis ${stop.axis}`)));
       }
+      assert(on.captionVisible, 'the caption must stay reachable after resizing');
+    });
 
-      // And the map must actually be painted, not left blank by the resize.
-      const painted = await page.evaluate(() => {
-        const c = document.getElementById('map-canvas');
-        const d = c.getContext('2d', {willReadFrequently: true})
-          .getImageData(0, 0, c.width, c.height).data;
-        let lit = 0;
-        for (let i = 3; i < d.length; i += 4 * 331) {
-          if (d[i] > 0) lit++;
-        }
-        return lit;
+    await test('full window mode can leave the window free instead', async () => {
+      await set_fill('bars');
+      await sleep(300);
+      const on = await layout();
+      eq(on.mode, 'window', 'layout mode');
+      eq(on.w, on.h, 'the canvas must stay square');
+      near(on.w, Math.min(on.vw, on.vh), 2, 'the map should fill the short side');
+      const gap_left = on.canvasLeft;
+      const gap_right = on.vw - on.canvasLeft - on.w;
+      near(gap_left, gap_right, 2, 'the map should be centred horizontally');
+      await set_fill('cover');
+    });
+
+    await test('the follow option shows when a drag has turned it off', async () => {
+      await page.evaluate(() => {
+        window.wtmap.settings.map_center = 1;
+        window.wtmap.settings.full_window_fill = 'cover';
+        window.wtmap.settings.full_window = 1;
+        window.wtmap.layout();
       });
-      assert(painted > 100, 'the map looks blank after the resize: ' + painted);
+      await page.click('.wtm-gear');
+      await sleep(200);
+      const before = await page.evaluate(() =>
+        document.getElementById('opt_map_center').checked);
+      assert(before, 'the option should start checked');
+
+      const after = await page.evaluate(() => {
+        window.isDraggingMap = true;
+        window.redraw_map(0.0);
+        window.isDraggingMap = false;
+        window.redraw_map(0.0);
+        return {checked: document.getElementById('opt_map_center').checked,
+                follow: window.wtmap.settings.map_center};
+      });
+      eq(after.follow, 0, 'the drag should have released the follow');
+      eq(after.checked, false, 'the option should no longer claim to follow');
+
+      // Put the follow back for the tests that come after.
+      await page.evaluate(() => {
+        window.wtmap.settings.map_center = 1;
+        localStorage.setItem('wtmap_map_center', 1);
+        document.getElementById('opt_map_center').checked = true;
+        document.getElementById('wtm-close').click();
+      });
+      await sleep(150);
     });
 
     // The same square-canvas rule has to hold in the fullscreen panel modes.
