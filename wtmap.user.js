@@ -1405,10 +1405,14 @@
 
         var width, height, size;
         if (mode === 'window') {
-            // Follow the browser window exactly, whatever its aspect ratio.
-            width = view_w;
-            height = view_h;
-            size = Math.max(width, height);
+            // The map image is square and the game stretches it to the canvas
+            // (drawImage(image, 0, 0, canvas.width, canvas.height)), so a canvas
+            // shaped like the window would distort the map. Fit the largest
+            // square the window allows and centre it instead.
+            size = Math.max(Math.min(view_w, view_h), 350);
+            size = Math.min(size, 1600);
+            width = size;
+            height = size;
         } else if (mode === 'column') {
             // Room for the caption and for the summary table under the canvas.
             size = Math.max(Math.min(view_h - CAPTION_HEIGHT - 10 - _summary_height,
@@ -1446,9 +1450,13 @@
         if (mode === 'column') {
             $sidepanels.css('left', size + 12);
             $map_panel.css('marginLeft', 0);
-        } else if (mode === 'overlay' || mode === 'hidden') {
-            // Centre the map; the panels sit on top of it. Measured rather than
-            // assumed, because the body margin and the panel border both count.
+            $map_panel.css('marginTop', 0);
+        } else if (mode === 'overlay' || mode === 'hidden' || mode === 'window') {
+            // Centre the map. In overlay the panels sit on top of it; in window
+            // mode the window's shape is wider or taller than the square, and
+            // without this the map would sit against one edge with a gap beside
+            // it. Measured rather than assumed, because the body margin and the
+            // panel border both count.
             var style = W.getComputedStyle(doc.body);
             var body_margin = (parseFloat(style.marginLeft) || 0) +
                                (parseFloat(style.marginRight) || 0);
@@ -1456,9 +1464,12 @@
             $sidepanels.css('left', '');
             $map_panel.css('marginLeft',
                     Math.max(Math.round((view_w - body_margin - panel_width) / 2), 0));
+            $map_panel.css('marginTop', mode === 'window' ?
+                    Math.max(Math.round((view_h - $map_panel[0].offsetHeight) / 2), 0) : 0);
         } else {
             $sidepanels.css('left', '');
             $map_panel.css('marginLeft', 0);
+            $map_panel.css('marginTop', 0);
         }
 
         update_scale();

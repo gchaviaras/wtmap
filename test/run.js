@@ -461,27 +461,38 @@ function compareSummary(want, got, team) {
       };
     });
 
-    await test('full window mode fills the browser window', async () => {
+    // The map image is square and the game stretches it to the canvas, so the
+    // canvas has to stay square in every mode or the map comes out distorted.
+    await test('full window mode fits a square map without distorting it', async () => {
       await page.evaluate(() => window.wtmap.full_window());
       await sleep(300);
       const on = await layout();
       eq(on.mode, 'window', 'layout mode');
-      eq(on.w, on.vw, 'canvas width should be the window width');
-      eq(on.h, on.vh, 'canvas height should be the window height');
-      eq(on.canvasLeft, 0, 'canvas left edge');
-      eq(on.canvasTop, on.captionBottom, 'the canvas should start under the caption');
+      eq(on.w, on.h, 'the canvas must stay square, the map image is');
+      assert(on.w <= Math.min(on.vw, on.vh),
+        'the square should fit the window: ' + on.w + ' in ' + on.vw + 'x' + on.vh);
+      // As large as the window allows: the short side is what limits it.
+      near(on.w, Math.min(on.vw, on.vh), 2, 'the map should fill the short side');
+      // Centred, not pushed against an edge with a gap beside it.
+      const gap_left = on.canvasLeft;
+      const gap_right = on.vw - on.canvasLeft - on.w;
+      near(gap_left, gap_right, 2, 'the map should be centred horizontally');
+      assert(on.canvasTop >= on.captionBottom - 1, 'the canvas should stay under the caption');
       eq(on.sideDisplay, 'none', 'panels should be hidden');
       assert(on.bodyClass.includes('wtm-mode-window'), 'body class: ' + on.bodyClass);
       assert(on.captionVisible, 'the caption must stay reachable to leave the mode');
 
-      // It has to follow the window when it is resized or maximised.
-      await page.setViewport({width: 1280, height: 720});
-      await sleep(300);
-      const resized = await layout();
-      eq(resized.w, resized.vw, 'canvas width after resize');
-      eq(resized.h, resized.vh, 'canvas height after resize');
-      await page.setViewport({width: 1500, height: 950});
-      await sleep(300);
+      // It has to follow the window when it is resized or maximised, in either
+      // orientation, and stay square throughout.
+      for (const [w, h] of [[1280, 720], [720, 1280], [1500, 950]]) {
+        await page.setViewport({width: w, height: h});
+        await sleep(300);
+        const r = await layout();
+        eq(r.w, r.h, `the canvas must stay square at ${w}x${h}`);
+        assert(r.w <= Math.min(w, h) + 1, `the square should fit at ${w}x${h}`);
+        near(r.canvasLeft, w - r.canvasLeft - r.w, 2,
+          `the map should be centred at ${w}x${h}`);
+      }
 
       // And the map must actually be painted, not left blank by the resize.
       const painted = await page.evaluate(() => {
@@ -495,6 +506,32 @@ function compareSummary(want, got, team) {
         return lit;
       });
       assert(painted > 100, 'the map looks blank after the resize: ' + painted);
+    });
+
+    // The same square-canvas rule has to hold in the fullscreen panel modes.
+    await test('every layout mode keeps the map square', async () => {
+      await set_full_window(false);
+      for (const panels of ['column', 'overlay', 'hidden']) {
+        await page.evaluate(panels => {
+          window.wtmap.settings.fullscreen_panels = panels;
+          window.wtmap.layout();
+        }, panels);
+        await sleep(150);
+        const r = await layout();
+        eq(r.w, r.h, panels + ': the canvas must stay square');
+      }
+      // And in a window shaped nothing like a square.
+      await page.setViewport({width: 1400, height: 620});
+      await sleep(300);
+      for (const panels of ['column', 'overlay', 'hidden', 'window']) {
+        if (panels === 'window') {
+          await set_full_window(true);
+        }
+        const r = await layout();
+        eq(r.w, r.h, panels + ': the canvas must stay square at 1400x620');
+      }
+      await page.setViewport({width: 1500, height: 950});
+      await sleep(200);
     });
 
     await test('full window mode is left with M or Escape', async () => {

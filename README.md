@@ -58,8 +58,9 @@ origin you open the map on.
   available space on any window size.
 * **Fullscreen** with the panels kept beside the map, floating over it, or
   hidden, whichever you prefer.
-* **Full window mode**, F11 style: the map fills the whole browser window at any
-  aspect ratio and follows it while you resize or maximise.
+* **Full window mode**, F11 style: the map grows to fill the browser window and
+  follows it while you resize or maximise, staying square so it is never
+  distorted.
 * **Optional State and Indicators panels**, rendered as tables with the values
   and units the game reports. Click a row to highlight it; the choice is
   remembered. Each panel has an inline *Update* toggle.
@@ -102,17 +103,18 @@ the tab is switched. The layout is recomputed whenever the state changes, so it
 also reacts to entering fullscreen with the browser's own button or a video
 element.
 
-In **full window mode** the canvas is resized to the exact dimensions of the
-browser window, so on a wide screen the map is stretched to the window's aspect
-ratio rather than staying square. It re-lays out on every resize, so maximising
-the window or pressing the browser's `F11` is enough to make the map fill the
-screen; full window mode itself just also hides the panels and drops the page
-margins. `Escape` or `M` brings the layout back.
+In **full window mode** the panels and the page margins go away and the map is
+sized to the largest square the window allows, centred, so the map image is never
+distorted. It re-lays out on every resize, so maximising the window or pressing
+the browser's `F11` is enough to make the map fill the screen; full window mode
+itself just also hides the panels. `Escape` or `M` brings the layout back.
 
-![full window mode: the map filling the whole browser window](docs/full-window.png)
+![full window mode: the map filling the browser window](docs/full-window.png)
 
-*Full window mode, 1280x800: the map fills the window and only the caption bar
-with the readouts and the three buttons is left.*
+*Full window mode, 1280x800: the map fills the window's short side and only the
+caption bar with the readouts and the three buttons is left. On a wide window the
+spare width sits either side as page background, because the map image is square
+and stretching it would make the map unreadable.*
 
 `window.wtmap` is exposed in the page console (`wtmap.settings`, `wtmap.mode()`,
 `wtmap.fullscreen()`, `wtmap.full_window()`, `wtmap.restart`, `wtmap.layout`, …)
