@@ -145,43 +145,47 @@
     /* ---------------------------------------------------------------- *
      * aircraft silhouettes                                             *
      *                                                                    *
-     * Three top-down outlines, authored here as polygons in a -1..1 space  *
-     * with the nose towards -y (north). They are drawn to be told apart at *
-     * 25 px, which is all they have to do: a map icon, not a technical    *
-     * drawing.                                                            *
+     * Three top-down outlines, authored here as SVG path data in a -1..1  *
+     * space with the nose towards -y (north). They are drawn to be told   *
+     * apart at a glance, which is all a map icon has to do.                *
      *                                                                    *
-     * The polygons are the fuselage, the wings and the tailplane. Wings    *
-     * are given once, for the right hand side; draw_plane mirrors them.    *
+     * Each entry is one side of the aircraft. The other side is the same   *
+     * path mirrored about x = 0, and `d` is the same string for the canvas *
+     * (through Path2D) and for the summary table's inline SVG. The three   *
+     * types differ by wing position, span, tail and the details that make  *
+     * them identifiable: a propeller disc on the single-engine types, an   *
+     * engine nacelle and twin fins on the bomber.                          *
      * ---------------------------------------------------------------- */
 
-    var PLANE_SHAPES = {
-        // single engine, straight wings
-        Fighter: [
-            [[0, -1.00], [0.07, -0.86], [0.11, -0.55], [0.13, -0.10],
-             [0.12, 0.28], [0.07, 0.68], [0.03, 0.90], [-0.03, 0.90],
-             [-0.07, 0.68], [-0.12, 0.28], [-0.13, -0.10], [-0.11, -0.55],
-             [-0.07, -0.86]],
-            [[0.10, -0.20], [0.95, 0.08], [0.95, 0.21], [0.11, 0.15]],
-            [[0.06, 0.54], [0.38, 0.77], [0.38, 0.86], [0.06, 0.79]]
-        ],
-        // twin engine, longer and wider, twin fin
-        Bomber: [
-            [[0, -1.00], [0.08, -0.80], [0.12, -0.50], [0.15, -0.06],
-             [0.13, 0.34], [0.07, 0.74], [0.03, 0.96], [-0.03, 0.96],
-             [-0.07, 0.74], [-0.13, 0.34], [-0.15, -0.06], [-0.12, -0.50],
-             [-0.08, -0.80]],
-            [[0.13, -0.16], [1.00, 0.14], [1.00, 0.27], [0.13, 0.19]],
-            [[0.06, 0.62], [0.44, 0.87], [0.44, 0.96], [0.06, 0.87]]
-        ],
-        // stubby, thick wings, short tail
-        Assault: [
-            [[0, -1.00], [0.10, -0.82], [0.15, -0.52], [0.17, -0.08],
-             [0.15, 0.28], [0.09, 0.64], [0.04, 0.86], [-0.04, 0.86],
-             [-0.09, 0.64], [-0.15, 0.28], [-0.17, -0.08], [-0.15, -0.52],
-             [-0.10, -0.82]],
-            [[0.15, -0.12], [0.88, 0.18], [0.88, 0.33], [0.15, 0.24]],
-            [[0.08, 0.50], [0.36, 0.70], [0.36, 0.80], [0.08, 0.73]]
-        ]
+    var AIRCRAFT = {
+        // slim fuselage, mid wing, propeller disc, small tail
+        Fighter: {
+            d: 'M0,-1 Q0.03,-0.94 0.05,-0.86 L0.06,-0.40 L0.84,0.00 ' +
+               'Q0.92,0.04 0.92,0.10 L0.90,0.18 L0.06,0.08 L0.055,0.50 ' +
+               'L0.28,0.68 Q0.32,0.72 0.31,0.78 L0.28,0.84 L0.03,0.79 ' +
+               'Q0,0.78 0,0.76 Z',
+            lines: ['M-0.24,-0.74 L0.24,-0.74']
+        },
+        // long fuselage, wide wing set aft, nacelle and twin fins
+        Bomber: {
+            d: 'M0,-1 Q0.04,-0.93 0.07,-0.84 L0.10,-0.34 L0.96,0.06 ' +
+               'Q1.00,0.10 1.00,0.16 L0.98,0.26 L0.10,0.16 L0.085,0.58 ' +
+               'L0.42,0.74 Q0.46,0.78 0.45,0.85 L0.42,0.90 L0.03,0.85 ' +
+               'Q0,0.84 0,0.82 Z',
+            extra: [
+                'M0.26,0.08 L0.40,0.08 Q0.42,0.14 0.40,0.20 L0.26,0.20 ' +
+                    'Q0.24,0.14 0.26,0.08 Z',
+                'M0.30,0.58 L0.40,0.58 L0.42,1.00 L0.32,1.00 Z'
+            ]
+        },
+        // stubby, thick wing set forward, propeller disc, tiny tail
+        Assault: {
+            d: 'M0,-1 Q0.06,-0.92 0.11,-0.82 L0.13,-0.24 L0.74,-0.08 ' +
+               'Q0.80,-0.05 0.80,0.01 L0.78,0.10 L0.13,0.06 L0.11,0.44 ' +
+               'L0.24,0.58 Q0.27,0.62 0.26,0.67 L0.23,0.72 L0.04,0.68 ' +
+               'Q0,0.67 0,0.65 Z',
+            lines: ['M-0.30,-0.68 L0.30,-0.68']
+        }
     };
 
     var PLANE_ORDER = ['Fighter', 'Bomber', 'Assault'];
@@ -193,18 +197,53 @@
         Assault: 1.02
     };
 
+    // The outline is centred on the origin and spans two units nose to tail,
+    // so these turn a pixel size into the transforms and the viewBox.
+    var PLANE_BOX = 1.15;          // viewBox half size, a little air around it
+    var PLANE_EDGE = 1 / 16;       // outline weight, relative to the icon size
+
     function is_plane(icon) {
-        return icon in PLANE_SHAPES;
+        return icon in AIRCRAFT;
     }
 
-    // The same outline as an SVG path, so the summary table can use it without
-    // a font. Fitted to a 200x200 viewBox.
+    // One side of the aircraft: the body outline plus any added shapes.
+    function plane_bodies(kind) {
+        var spec = AIRCRAFT[kind];
+        return [spec.d].concat(spec.extra || []);
+    }
+
+    // The same paths as an inline SVG. Both halves are always emitted: the
+    // canvas mirrors by scaling, the SVG by a transform, so neither renderer
+    // can forget a wing.
+    function plane_svg(kind, size) {
+        var px = Math.max(4, Math.round(size * PLANE_SCALE[kind] * PLANE_BOX));
+        var stroke = (size * PLANE_SCALE[kind] * PLANE_EDGE) *
+                     (2 * PLANE_BOX / px);
+        var svg = '<svg viewBox="' + (-PLANE_BOX) + ' ' + (-PLANE_BOX) + ' ' +
+                  (2 * PLANE_BOX) + ' ' + (2 * PLANE_BOX) + '" width="' + px +
+                  '" height="' + px + '">';
+        plane_bodies(kind).forEach(function (d) {
+            // Each side, with its own mirrored copy: both halves have to be
+            // emitted or the aircraft ends up with one wing.
+            svg += '<path d="' + d + '" stroke-width="' + stroke.toFixed(3) +
+                   '"/><path d="' + d + '" stroke-width="' + stroke.toFixed(3) +
+                   '" transform="scale(-1,1)"/>';
+        });
+        (AIRCRAFT[kind].lines || []).forEach(function (d) {
+            svg += '<path class="wtm-detail" d="' + d + '" stroke-width="' +
+                   (stroke * 0.6).toFixed(3) + '"/>';
+        });
+        return svg + '</svg>';
+    }
+
+    var _plane_path_cache = {};
+
     function plane_path(kind) {
-        return PLANE_SHAPES[kind].map(function (polygon) {
-            return 'M' + polygon.map(function (point) {
-                return (point[0] * 100).toFixed(2) + ' ' + (point[1] * 100).toFixed(2);
-            }).join('L') + 'Z';
-        }).join('');
+        if (!_plane_path_cache[kind]) {
+            _plane_path_cache[kind] = new W.Path2D(
+                plane_bodies(kind).join(' '));
+        }
+        return _plane_path_cache[kind];
     }
 
     function draw_plane(ctx, kind, sx, sy, dir, fill, alpha, size, outline) {
@@ -215,35 +254,38 @@
         if (dir) {
             ctx.rotate(dir);
         }
+        ctx.scale(scale, scale);
+        // Line widths are in the -1..1 space from here on.
+        var edge = PLANE_EDGE * 2;
+        var path = plane_path(kind);
 
-        // One path holding the fuselage and both wings, so the seams where they
-        // meet are covered by the fill and never show as lines.
-        ctx.beginPath();
-        PLANE_SHAPES[kind].forEach(function (polygon) {
-            [1, -1].forEach(function (side) {
-                for (var i = 0; i < polygon.length; i++) {
-                    var x = polygon[i][0] * scale * side;
-                    var y = polygon[i][1] * scale;
-                    if (i === 0) {
-                        ctx.moveTo(x, y);
-                    } else {
-                        ctx.lineTo(x, y);
-                    }
-                }
-                ctx.closePath();
-            });
+        // Outline first on both sides, then fill over it, so the seams where
+        // the shapes meet disappear under the fill and only the outer edge
+        // shows.
+        [1, -1].forEach(function (side) {
+            ctx.save();
+            ctx.scale(side, 1);
+            if (outline) {
+                ctx.lineJoin = 'round';
+                ctx.lineWidth = edge;
+                ctx.strokeStyle = alpha ? hex_to_rgba(outline, alpha) : outline;
+                ctx.stroke(path);
+            }
+            ctx.fillStyle = alpha ? hex_to_rgba(fill, alpha) : fill;
+            ctx.fill(path);
+            ctx.restore();
         });
 
-        if (outline) {
-            // Stroking before filling leaves the outer half of the outline
-            // visible as a clean silhouette edge.
-            ctx.lineJoin = 'round';
-            ctx.lineWidth = Math.max(1.5, size / 11);
-            ctx.strokeStyle = alpha ? hex_to_rgba(outline, alpha) : outline;
-            ctx.stroke();
-        }
-        ctx.fillStyle = alpha ? hex_to_rgba(fill, alpha) : fill;
-        ctx.fill();
+        (AIRCRAFT[kind].lines || []).forEach(function (d) {
+            ctx.beginPath();
+            var line = new W.Path2D(d);
+            ctx.save();
+            ctx.lineWidth = edge * 0.6;
+            ctx.strokeStyle = alpha ? hex_to_rgba(outline || '#000', alpha)
+                                    : (outline || '#000');
+            ctx.stroke(line);
+            ctx.restore();
+        });
 
         ctx.restore();
     }
@@ -582,6 +624,7 @@
     }
 
     var summary_rows = null;
+    var SUMMARY_ICON_SIZE = 21;   // aircraft artwork in the summary table
     var $summary = null;
     var _summary_height = 0;
     var _summary_cells = -1;
@@ -611,10 +654,7 @@
                 if (counts[team]) {
                     if (is_plane(icon)) {
                         th.className = 'wtm-aircraft';
-                        var size = Math.round(21 * (PLANE_SCALE[icon] || 1));
-                        th.innerHTML = '<svg viewBox="-105 -105 210 210" width="' +
-                            size + '" height="' + size + '"><path d="' +
-                            plane_path(icon) + '"/></svg>';
+                        th.innerHTML = plane_svg(icon, SUMMARY_ICON_SIZE);
                     } else {
                         th.textContent = glyph;
                     }
@@ -1050,19 +1090,17 @@
                 '</div></div>').appendTo(doc.body);
 
         var preview = PLANE_ORDER.map(function (kind) {
-            var $slot = $('<span class="wtm-preview"></span>')
+            var $slot = $('<span class="wtm-preview" data-plane="' + kind + '"></span>')
                 .attr('title', kind)
                 .appendTo('#wtm-plane_icon_preview');
-            $('<svg viewBox="-105 -105 210 210"><path d="' + plane_path(kind) +
-                '"/></svg>').appendTo($slot);
+            $slot.html(plane_svg(kind, DEFAULTS.plane_icon_size));
             return $slot;
         });
 
         $('#opt_icon_size').on('input', function () {
             var size = parseFloat($(this).val()) || DEFAULTS.plane_icon_size;
-            preview.forEach(function ($slot, i) {
-                $slot.children('svg').attr('width', Math.round(size * (PLANE_SCALE[PLANE_ORDER[i]] || 1)))
-                    .attr('height', Math.round(size * (PLANE_SCALE[PLANE_ORDER[i]] || 1)));
+            preview.forEach(function ($slot) {
+                $slot.html(plane_svg($slot.attr('data-plane'), size));
             });
         });
 
@@ -1534,10 +1572,13 @@
             "}",
             "#wtm-mapsummary td { font-size: 11px; padding: 0; }",
             "#wtm-mapsummary svg { display: block; }",
-            "#wtm-mapsummary .wtm-aircraft svg { fill: currentColor; }",
-            "#wtm-mapsummary svg path {",
-            "  stroke: #000; stroke-width: 6; stroke-linejoin: round;",
-            "}",
+            /* The panel rule above gives every descendant an explicit colour, so
+               currentColor would resolve to grey. Name the row colours here. */
+            "#wtm-bluerow th.wtm-aircraft svg,",
+            "#wtm-bluerow th.wtm-aircraft svg path { fill: #145cff; }",
+            "#wtm-redrow th.wtm-aircraft svg,",
+            "#wtm-redrow th.wtm-aircraft svg path { fill: #e70000; }",
+            "#wtm-mapsummary svg path { stroke: #000; stroke-linejoin: round; }",
             "#wtm-bluerow th { color: #145cff; }",
             "#wtm-redrow th { color: #e70000; }",
 
@@ -1630,9 +1671,7 @@
             "#wtm-plane_icon_preview { display: inline-block; padding-left: 10px; }",
             "#wtm-plane_icon_preview .wtm-preview { display: inline-block; }",
             "#wtm-plane_icon_preview svg { fill: #e33; display: block; }",
-            "#wtm-plane_icon_preview svg path {",
-            "  stroke: #000; stroke-width: 6; stroke-linejoin: round;",
-            "}",
+            "#wtm-plane_icon_preview svg path { stroke: #000; stroke-linejoin: round; }",
             "#wtm-options-buttons { margin: 15px 0 0; }",
             "#wtm-options-buttons button { position: relative; top: -1px; cursor: pointer; }",
             "#wtm-status { padding-left: 10px; color: #8f8; }",

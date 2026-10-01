@@ -601,15 +601,77 @@ function compareSummary(want, got, team) {
         ['Fighter', 'Bomber', 'Assault'].forEach(icon => {
           const cell = [...document.querySelectorAll('#wtm-mapsummary th')]
             .find(th => th.title === icon);
-          out[icon] = cell ? (cell.querySelector('svg path') || {}).getAttribute?.('d') : null;
+          const path = cell && cell.querySelector('svg path');
+          out[icon] = path ? path.getAttribute('d') : null;
         });
         return out;
       });
-      const seen = Object.values(paths);
       for (const [icon, path] of Object.entries(paths)) {
         assert(path, 'no artwork for ' + icon);
       }
-      eq(new Set(seen).size, 3, 'the silhouettes are not all different');
+      eq(new Set(Object.values(paths)).size, 3, 'the silhouettes are not all different');
+    });
+
+    // The canvas mirrors the shapes with a scale, the SVG with a transform.
+    // When only one half was emitted the summary drew a fuselage with a single
+    // wing, which nothing else here would have noticed.
+    await test('aircraft artwork is drawn on both sides', async () => {
+      const shapes = await page.evaluate(() => {
+        const out = {};
+        ['Fighter', 'Bomber', 'Assault'].forEach(icon => {
+          const cell = [...document.querySelectorAll('#wtm-mapsummary th')]
+            .find(th => th.title === icon);
+          if (!cell) {
+            return;
+          }
+          const paths = [...cell.querySelectorAll('svg path')];
+          out[icon] = {
+            total: paths.length,
+            mirrored: paths.filter(p =>
+              (p.getAttribute('transform') || '').indexOf('scale(-1,1)') >= 0).length,
+            details: paths.filter(p => p.classList.contains('wtm-detail')).length,
+            widths: paths.map(p => Number(p.getAttribute('stroke-width'))),
+          };
+        });
+        return out;
+      });
+
+      for (const [icon, shape] of Object.entries(shapes)) {
+        // Every body path is emitted twice, once mirrored; the detail lines are
+        // symmetric on their own and appear once. So the bodies, the mirrors and
+        // the details together account for every element.
+        eq(shape.mirrored * 2, shape.total - shape.details,
+          icon + ': every body path needs exactly one mirrored copy');
+        assert(shape.details <= 1, icon + ': unexpected detail lines');
+        shape.widths.forEach(w =>
+          assert(w > 0 && w < 1, icon + ': implausible stroke width ' + w));
+      }
+
+      // The bomber adds a nacelle and twin fins on top of its outline.
+      const bomber = shapes.Bomber;
+      assert(bomber && bomber.total - bomber.details >= 6,
+        'the bomber should draw its nacelle and twin fins as well, got ' +
+        (bomber && bomber.total));
+
+      // The artwork has to pick up the row colour. It did not for a while:
+      // the panel rule gives every descendant an explicit grey, so
+      // currentColor resolved to grey rather than to the row.
+      const colours = await page.evaluate(() => {
+        function fill(rowId) {
+          const path = document.querySelector('#' + rowId +
+            ' th.wtm-aircraft svg path');
+          return path ? getComputedStyle(path).fill : null;
+        }
+        const blue = fill('wtm-bluerow');
+        const red = fill('wtm-redrow');
+        return {blue, red,
+          blueText: getComputedStyle(document.querySelector('#wtm-bluerow th')).color,
+          redText: getComputedStyle(document.querySelector('#wtm-redrow th')).color};
+      });
+      if (colours.blue && colours.red) {
+        eq(colours.blue, colours.blueText, 'blue row artwork colour');
+        eq(colours.red, colours.redText, 'red row artwork colour');
+      }
     });
 
     await test('respawn bases are not counted as contacts', async () => {
