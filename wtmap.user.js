@@ -1180,6 +1180,7 @@
         _canvas = doc.getElementById('map-canvas');
         $(_canvas).appendTo(map.$contents);
 
+        // --- panning with the mouse ---
         // The map pans with touch only: the game configures Hammer with
         // no_mouseevents, and its own mousedown handler is commented out in the
         // page, so for anyone on a mouse or a trackpad the drag did nothing at
