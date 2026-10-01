@@ -508,6 +508,9 @@
     }
 
     var summary_rows = null;
+    var $summary = null;
+    var _summary_height = 0;
+    var _summary_cells = -1;
 
     function render_summary(summary) {
         if (!summary_rows) {
@@ -543,6 +546,32 @@
                 row.appendChild(td);
             });
         });
+
+        measure_summary();
+    }
+
+    // The summary sits under the canvas, so the map has to leave room for it or
+    // it ends up below the bottom of the window. Its height changes with the
+    // number of contact kinds, so it is measured rather than guessed.
+    function measure_summary() {
+        if (!$summary) {
+            return;
+        }
+        // Two rows always exist, so count the cells inside them: an empty row
+        // collapses and the table gets shorter as contacts come and go.
+        var cells = 0;
+        for (var i = 0; i < $summary[0].children.length; i++) {
+            cells += $summary[0].children[i].children.length;
+        }
+        if (cells === _summary_cells) {
+            return;
+        }
+        _summary_cells = cells;
+        var height = $summary[0].offsetHeight;
+        if (height !== _summary_height) {
+            _summary_height = height;
+            position_panels();
+        }
     }
 
     function render_title(friendlies, enemies, min_distance) {
@@ -859,7 +888,7 @@
         _canvas = doc.getElementById('map-canvas');
         $(_canvas).appendTo(map.$contents);
 
-        var $summary = $('<table id="wtm-mapsummary"></table>').appendTo(map.$contents);
+        $summary = $('<table id="wtm-mapsummary"></table>').appendTo(map.$contents);
         summary_rows = [doc.createElement('tr'), doc.createElement('tr')];
         summary_rows[0].id = 'wtm-bluerow';
         summary_rows[1].id = 'wtm-redrow';
@@ -1125,7 +1154,8 @@
             height = view_h;
             size = Math.max(width, height);
         } else if (mode === 'column') {
-            size = Math.max(Math.min(view_h - CAPTION_HEIGHT - 10,
+            // Room for the caption and for the summary table under the canvas.
+            size = Math.max(Math.min(view_h - CAPTION_HEIGHT - 10 - _summary_height,
                     view_w - SIDE_PANEL_WIDTH - 30), 350);
             size = Math.min(size, 1600);
             width = size;
@@ -1490,6 +1520,13 @@
             "body.wtm-mode-window #wtm-map,",
             "body.wtm-mode-overlay #wtm-map,",
             "body.wtm-mode-hidden #wtm-map { line-height: 0; }",
+            /* no room is reserved for the summary in these modes, so it floats
+               over the bottom of the map instead */
+            "body.wtm-mode-window #wtm-mapsummary,",
+            "body.wtm-mode-overlay #wtm-mapsummary,",
+            "body.wtm-mode-hidden #wtm-mapsummary { position: fixed; top: auto;",
+            "left: 8px; bottom: 8px; margin: 0; padding: 2px 5px;",
+            "background: rgba(40, 40, 40, .75); border-radius: 2px; z-index: 25; }",
             /* the caption stays reachable so the modes can be left again */
             "body.wtm-mode-window #wtm-map-root,",
             "body.wtm-mode-overlay #wtm-map-root { z-index: 10; }",

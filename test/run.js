@@ -181,6 +181,9 @@ function near(actual, expected, tolerance, message) {
 }
 
 async function setMode(mode) {
+  if (EXTERNAL_URL) {
+    return;   // a real game has no fixture control endpoints
+  }
   const response = await fetch(FIXTURE_URL + '__mode?name=' + mode);
   await response.json();
 }
@@ -229,7 +232,9 @@ function expectedSummary(objects) {
 }
 
 function expectedCaption(info) {
-  const units = info.map_max[0] * 10;          // 10 m per map unit
+  // Maps are not always at the origin: this one spans 1024..3072, so the width
+  // is the difference, not map_max[0].
+  const units = (info.map_max[0] - info.map_min[0]) * 10;   // 10 m per map unit
   const grid = info.grid_steps[0] * 10;
   return Math.round(units / 1000) + '×' + Math.round(units / 1000) + ' km' +
     (grid / 1000).toFixed(2) + ' km1.00';
@@ -369,11 +374,40 @@ function compareSummary(want, got, team) {
     await test('the map takes the available space', async () => {
       const size = await page.evaluate(() => {
         const c = document.getElementById('map-canvas');
-        return {w: c.width, h: c.height, vw: document.documentElement.clientWidth,
-          vh: document.documentElement.clientHeight};
+        const summary = document.getElementById('wtm-mapsummary');
+        return {
+          w: c.width, h: c.height,
+          vw: document.documentElement.clientWidth,
+          vh: document.documentElement.clientHeight,
+          summary: Math.round(summary.getBoundingClientRect().height),
+        };
       });
       eq(size.w, size.h, 'canvas is not square');
-      eq(size.w, Math.max(Math.min(size.vh - 34, size.vw - 310 - 30), 350), 'canvas size');
+      // 34 is the caption plus the body margin, and the summary is measured
+      // because its height depends on how many contact kinds are on the map.
+      eq(size.w, Math.max(Math.min(size.vh - 34 - size.summary,
+        size.vw - 310 - 30), 350), 'canvas size');
+    });
+
+    await test('the summary is on screen, not below the window', async () => {
+      const boxes = await page.evaluate(() => {
+        function box(sel) {
+          const r = document.querySelector(sel).getBoundingClientRect();
+          return {top: Math.round(r.top), bottom: Math.round(r.bottom),
+            left: Math.round(r.left), right: Math.round(r.right),
+            height: Math.round(r.height), width: Math.round(r.width)};
+        }
+        return {summary: box('#wtm-mapsummary'),
+          viewport: document.documentElement.clientHeight,
+          width: document.documentElement.clientWidth,
+          scroll: document.documentElement.scrollHeight};
+      });
+      eq(boxes.scroll, boxes.viewport, 'the page should not need scrolling');
+      assert(boxes.summary.bottom <= boxes.viewport,
+        'the summary runs off the bottom: ' + boxes.summary.bottom +
+        ' in a ' + boxes.viewport + 'px window');
+      assert(boxes.summary.right <= boxes.width,
+        'the summary runs off the right: ' + boxes.summary.right);
     });
 
     /* --- full window and fullscreen modes --------------------------- */
@@ -618,13 +652,16 @@ function compareSummary(want, got, team) {
         await sleep(40);
       }
       await sleep(250);
-      const zoomed = await page.evaluate(() => ({
-        scale: window.map_scale,
-        stored: parseFloat(localStorage.getItem('wtmap_scale')),
-        width: (window.map_info || {}).map_max,
-      }));
+      const zoomed = await page.evaluate(() => {
+        const info = window.map_info || {};
+        return {
+          scale: window.map_scale,
+          stored: parseFloat(localStorage.getItem('wtmap_scale')),
+          width: info.map_max && info.map_min ? info.map_max[0] - info.map_min[0] : null,
+        };
+      });
       assert(zoomed.scale > 1.05, 'wheel did not zoom in: ' + zoomed.scale);
-      near(zoomed.stored * zoomed.width[0], zoomed.scale, 0.01,
+      near(zoomed.stored * zoomed.width, zoomed.scale, 0.01,
         'stored ratio does not reproduce the scale');
 
       // update_map_info resets the scale whenever the map generation changes.
@@ -671,10 +708,20 @@ function compareSummary(want, got, team) {
             ? String(Math.round(value * 100) / 100)
             : String(value);
           const unit = key.includes(',') ? key.split(',')[1].trim() : '';
-          assert(got[i][1].startsWith(shown), name + ' row ' + i + ' value: ' +
-            got[i][1] + ' should start with ' + shown);
           if (unit) {
             assert(got[i][1].endsWith(unit), name + ' row ' + i + ' unit: ' + got[i][1]);
+          }
+          if (EXTERNAL_URL) {
+            // A live vehicle's instruments move between this fetch and the
+            // page's next poll, so only check the shape of the value here.
+            // Some are strings to begin with, e.g. army, type.
+            if (typeof value === 'number') {
+              assert(/^-?\d/.test(got[i][1].replace(unit, '').trim()),
+                name + ' row ' + i + ' value is not a number: ' + got[i][1]);
+            }
+          } else {
+            assert(got[i][1].startsWith(shown), name + ' row ' + i + ' value: ' +
+              got[i][1] + ' should start with ' + shown);
           }
         });
       }
