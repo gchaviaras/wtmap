@@ -35,8 +35,13 @@ origin you open the map on.
 
 * **Different icons per aircraft type** — fighters, bombers and attack aircraft
   get their own silhouette instead of a letter. The outlines are drawn here as
-  polygons and filled onto the canvas, so they scale cleanly and there is no
-  font to load.
+  paths and filled onto the canvas, so they scale cleanly and there is no font
+  to load. They are told apart by wing position, span and tail rather than by
+  size alone.
+* **Icons that keep their colour** — a heavy outline swallows the fill on a
+  shape as thin as an aircraft wing, so the default edge is a one pixel shadow
+  rather than a stroke. The map's own tank and structure glyphs get the same
+  treatment.
 * **Icons point where the aircraft points**, taken from the contact's heading.
 * **The map follows the player** (optional) and keeps the zoom level you chose,
   including across map changes and reloads.
@@ -69,6 +74,7 @@ origin you open the map on.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | Plane icon size | 25 | Icon size in pixels |
+| Icon edge | Shadow only | How contact icons are edged: shadow only, thin outline, both, none, or a heavy outline. Applies to the aircraft and to the map's own tank and structure glyphs |
 | Centre map on player | on | Follow the player |
 | Units | km | km, mi, nmi, m or ft for the distance and size readouts |
 | Map scale | 10 | Metres per map unit. The game uses a 0..2048 grid on 20 km maps and 0..4096 on 40 km maps, so 10 m per unit makes the readouts correct on both |

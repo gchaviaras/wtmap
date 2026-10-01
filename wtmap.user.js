@@ -38,6 +38,7 @@
 
     var DEFAULTS = {
         plane_icon_size: 25,      // px
+        icon_edge: 'shadow',      // how contact icons are edged, see EDGE_MODES
         map_center: 1,            // follow the player
         units: 'km',              // km | mi | nmi | m | ft
         // Map coordinates are a unit grid: 0..2048 on the 20 km air maps and
@@ -62,6 +63,17 @@
         nmi: 0.000539957,
         mi: 0.000621371,
         ft: 3.28084
+    };
+
+    // How contact icons are edged on the map. A thick edge swallows the fill
+    // on shapes as thin as an aircraft wing, so a one pixel shadow is the
+    // default; the outline weights are in canvas pixels.
+    var EDGE_MODES = {
+        none: 1,      // flat colour
+        thin: 1,      // hairline edge
+        both: 1,      // hairline edge and shadow
+        shadow: 1,    // shadow only, the default
+        outline: 1    // the heavier edge, as it was
     };
 
     // What happens to the side panels while the map is fullscreen.
@@ -135,6 +147,9 @@
         if (!(settings.fullscreen_panels in PANEL_MODES)) {
             settings.fullscreen_panels = DEFAULTS.fullscreen_panels;
         }
+        if (!(settings.icon_edge in EDGE_MODES)) {
+            settings.icon_edge = DEFAULTS.icon_edge;
+        }
         settings.full_window = settings.full_window ? 1 : 0;
     })();
 
@@ -200,10 +215,30 @@
     // The outline is centred on the origin and spans two units nose to tail,
     // so these turn a pixel size into the transforms and the viewBox.
     var PLANE_BOX = 1.15;          // viewBox half size, a little air around it
-    var PLANE_EDGE = 1 / 16;       // outline weight, relative to the icon size
 
     function is_plane(icon) {
         return icon in AIRCRAFT;
+    }
+
+    var EDGE_SHADOW = 1;          // shadow offset in canvas pixels
+
+    function edge_style() {
+        switch (settings.icon_edge) {
+        case 'none':
+            return {edge: 0, shadow: 0};
+        case 'thin':
+            return {edge: 0.5, shadow: 0};
+        case 'both':
+            return {edge: 0.5, shadow: EDGE_SHADOW};
+        case 'outline':
+            return {edge: 1.5, shadow: 0};
+        default:
+            return {edge: 0, shadow: EDGE_SHADOW};
+        }
+    }
+
+    function shadow_colour(alpha) {
+        return 'rgba(0,0,0,' + (0.85 * (alpha || 1)) + ')';
     }
 
     // One side of the aircraft: the body outline plus any added shapes.
@@ -212,28 +247,51 @@
         return [spec.d].concat(spec.extra || []);
     }
 
-    // The same paths as an inline SVG. Both halves are always emitted: the
-    // canvas mirrors by scaling, the SVG by a transform, so neither renderer
-    // can forget a wing.
+    // The same paths as an inline SVG, with the same edge the canvas uses.
+    // Both halves are always emitted: the canvas mirrors by scaling, the SVG by
+    // a transform, so neither renderer can forget a wing.
     function plane_svg(kind, size) {
-        var px = Math.max(4, Math.round(size * PLANE_SCALE[kind] * PLANE_BOX));
-        var stroke = (size * PLANE_SCALE[kind] * PLANE_EDGE) *
-                     (2 * PLANE_BOX / px);
+        var scale = PLANE_SCALE[kind] || 1;
+        var style = edge_style();
+        var px = Math.max(4, Math.round(size * scale * PLANE_BOX));
+        // The viewBox spans 2 * PLANE_BOX units and is `px` pixels wide.
+        var per_pixel = (2 * PLANE_BOX) / px;
+        var edge = (style.edge * per_pixel).toFixed(3);
+        var offset = (style.shadow * per_pixel).toFixed(3);
+
         var svg = '<svg viewBox="' + (-PLANE_BOX) + ' ' + (-PLANE_BOX) + ' ' +
                   (2 * PLANE_BOX) + ' ' + (2 * PLANE_BOX) + '" width="' + px +
                   '" height="' + px + '">';
+
+        // All the shadows first, so none of them lands on top of a fill.
+        if (style.shadow) {
+            var shadow_attrs = ' style="fill:#000;stroke:none" transform="translate(' +
+                offset + ' ' + offset + ')';
+            plane_bodies(kind).forEach(function (d) {
+                svg += path_element(d, shadow_attrs);
+                svg += path_element(d, shadow_attrs + ' scale(-1,1)');
+            });
+        }
+
+        var body_attrs = ' stroke-width="' + edge + '"';
         plane_bodies(kind).forEach(function (d) {
-            // Each side, with its own mirrored copy: both halves have to be
-            // emitted or the aircraft ends up with one wing.
-            svg += '<path d="' + d + '" stroke-width="' + stroke.toFixed(3) +
-                   '"/><path d="' + d + '" stroke-width="' + stroke.toFixed(3) +
-                   '" transform="scale(-1,1)"/>';
+            svg += path_element(d, body_attrs);
+            svg += path_element(d, body_attrs + ' transform="scale(-1,1)"');
         });
+
+        // The propeller disc is a detail rather than an edge, so it stays dark
+        // whichever edge is chosen.
+        var detail = (Math.max(0.6, style.edge || 0.5) * per_pixel).toFixed(3);
         (AIRCRAFT[kind].lines || []).forEach(function (d) {
             svg += '<path class="wtm-detail" d="' + d + '" stroke-width="' +
-                   (stroke * 0.6).toFixed(3) + '"/>';
+                   detail + '"/>';
         });
+
         return svg + '</svg>';
+    }
+
+    function path_element(d, attrs) {
+        return '<path d="' + d + '"' + attrs + '/>';
     }
 
     var _plane_path_cache = {};
@@ -246,7 +304,8 @@
         return _plane_path_cache[kind];
     }
 
-    function draw_plane(ctx, kind, sx, sy, dir, fill, alpha, size, outline) {
+    function draw_plane(ctx, kind, sx, sy, dir, fill, alpha, size) {
+        var style = edge_style();
         var scale = size / 2 * (PLANE_SCALE[kind] || 1);
 
         ctx.save();
@@ -255,20 +314,27 @@
             ctx.rotate(dir);
         }
         ctx.scale(scale, scale);
-        // Line widths are in the -1..1 space from here on.
-        var edge = PLANE_EDGE * 2;
+        // Line widths and offsets from here on are in the -1..1 space.
+        var edge = style.edge / scale;
         var path = plane_path(kind);
 
-        // Outline first on both sides, then fill over it, so the seams where
-        // the shapes meet disappear under the fill and only the outer edge
-        // shows.
+        // Both halves, painted from a shadow behind to the fill on top.
         [1, -1].forEach(function (side) {
             ctx.save();
             ctx.scale(side, 1);
-            if (outline) {
+            if (style.shadow) {
+                ctx.shadowColor = shadow_colour(alpha);
+                ctx.shadowOffsetX = style.shadow / scale;
+                ctx.shadowOffsetY = style.shadow / scale;
+                ctx.shadowBlur = 0;
+                ctx.fillStyle = alpha ? hex_to_rgba(fill, alpha) : fill;
+                ctx.fill(path);
+                ctx.shadowColor = 'transparent';
+            }
+            if (edge > 0) {
                 ctx.lineJoin = 'round';
                 ctx.lineWidth = edge;
-                ctx.strokeStyle = alpha ? hex_to_rgba(outline, alpha) : outline;
+                ctx.strokeStyle = 'rgba(0,0,0,' + (alpha || 1) + ')';
                 ctx.stroke(path);
             }
             ctx.fillStyle = alpha ? hex_to_rgba(fill, alpha) : fill;
@@ -276,14 +342,13 @@
             ctx.restore();
         });
 
+        // The propeller disc reads as a detail rather than an edge, so it stays
+        // dark whichever edge is chosen.
         (AIRCRAFT[kind].lines || []).forEach(function (d) {
-            ctx.beginPath();
-            var line = new W.Path2D(d);
             ctx.save();
-            ctx.lineWidth = edge * 0.6;
-            ctx.strokeStyle = alpha ? hex_to_rgba(outline || '#000', alpha)
-                                    : (outline || '#000');
-            ctx.stroke(line);
+            ctx.lineWidth = Math.max(0.6, style.edge || 0.5) / scale;
+            ctx.strokeStyle = 'rgba(0,0,0,' + (alpha || 1) + ')';
+            ctx.stroke(new W.Path2D(d));
             ctx.restore();
         });
 
@@ -359,6 +424,7 @@
      * patching the map code                                              *
      * ---------------------------------------------------------------- */
 
+    var _orig_draw_map_object = null;   // the map's own glyph drawing
     var patched = false;
     var booted = false;
     var pollers = {};
@@ -430,6 +496,48 @@
         return {x: sx, y: sy};
     }
 
+    // The map draws its own glyphs (tanks, structures, capture zones) with a
+    // hardcoded 1px black stroke. Rather than copy its glyph, font and rotation
+    // code, intercept the two text calls it makes and edge them the same way as
+    // the aircraft. With the heavier edge the map's own setting is left alone.
+    function draw_map_glyph(canvas, ctx, item, rotate) {
+        // 'outline' is the map's own look, so leave it alone. Every other
+        // option needs the interception, 'none' included: suppressing the
+        // stroke is only possible by not letting the map draw it.
+        var style = edge_style();
+        if (settings.icon_edge === 'outline') {
+            return _orig_draw_map_object.apply(this, arguments);
+        }
+
+        var fill_text = ctx.fillText;
+        var stroke_text = ctx.strokeText;
+
+        ctx.fillText = function (text, x, y) {
+            if (style.shadow) {
+                ctx.shadowColor = shadow_colour();
+                ctx.shadowOffsetX = style.shadow;
+                ctx.shadowOffsetY = style.shadow;
+                ctx.shadowBlur = 0;
+            }
+            fill_text.call(ctx, text, x, y);
+            ctx.shadowColor = 'transparent';
+        };
+        ctx.strokeText = function (text, x, y) {
+            if (style.edge > 0) {
+                ctx.lineWidth = style.edge * 2;
+                ctx.strokeStyle = '#000';
+                stroke_text.call(ctx, text, x, y);
+            }
+        };
+
+        try {
+            return _orig_draw_map_object.apply(this, arguments);
+        } finally {
+            ctx.fillText = fill_text;
+            ctx.strokeText = stroke_text;
+        }
+    }
+
     function center_view(x, y, c_width, c_height) {
         W.map_pan[0] = -(x * c_width * W.map_scale) + c_width / 2;
         W.map_pan[1] = -(y * c_width * W.map_scale) + c_height / 2;
@@ -450,18 +558,20 @@
             return _draw_player.apply(this, arguments);
         };
 
-        // --- plane icons with heading, off-screen contacts on the edge ---
-        var _draw_map_object = W.draw_map_object;
+        // --- aircraft artwork, and the map's own glyphs with the same edge ---
+        _orig_draw_map_object = W.draw_map_object;
         W.draw_map_object = function (canvas, ctx, item, rotate) {
             if (item.type !== 'aircraft' || !(_canvas && _canvas.width)) {
-                return _draw_map_object.apply(this, arguments);
+                return draw_map_glyph.call(this, canvas, ctx, item, rotate);
             }
 
             var sx = item.x * _canvas.width * W.map_scale + W.map_pan[0];
             var sy = item.y * _canvas.height * W.map_scale + W.map_pan[1];
 
             if (!is_plane(item.icon)) {
-                return _draw_map_object.apply(this, arguments);
+                // An aircraft type we have no artwork for: the map draws it, but
+                // still with the chosen edge.
+                return draw_map_glyph.call(this, canvas, ctx, item, rotate);
             }
 
             var dx = +item.dx;
@@ -479,7 +589,7 @@
             }
 
             draw_plane(ctx, item.icon, sx, sy, dir, color,
-                    offscreen ? '0.35' : null, settings.plane_icon_size, '#000000');
+                    offscreen ? '0.35' : null, settings.plane_icon_size);
         };
 
         // --- sorting, summary and title bar ---
@@ -1046,6 +1156,14 @@
                 '<tr><td><label for="opt_icon_size">Plane icon size</label></td>' +
                 '<td><input type="number" min="8" max="80" id="opt_icon_size" ' +
                 'class="input_number"> px <span id="wtm-plane_icon_preview"></span></td></tr>' +
+                '<tr><td><label for="opt_icon_edge">Icon edge</label></td>' +
+                '<td><select id="opt_icon_edge">' +
+                '<option value="shadow">Shadow only</option>' +
+                '<option value="thin">Thin outline</option>' +
+                '<option value="both">Thin outline and shadow</option>' +
+                '<option value="none">None</option>' +
+                '<option value="outline">Heavy outline</option>' +
+                '</select></td></tr>' +
                 '<tr><td><label for="opt_map_center">Centre map on player</label></td>' +
                 '<td><input type="checkbox" id="opt_map_center"></td></tr>' +
                 '<tr><td>Units</td><td>' +
@@ -1104,8 +1222,17 @@
             });
         });
 
+        $('#opt_icon_edge').change(function () {
+            settings.icon_edge = $(this).val();
+            preview.forEach(function ($slot) {
+                $slot.html(plane_svg($slot.attr('data-plane'),
+                    parseFloat($('#opt_icon_size').val()) || DEFAULTS.plane_icon_size));
+            });
+        });
+
         $('#wtm-save').click(function () {
             store.set('plane_icon_size', num_range('#opt_icon_size', DEFAULTS.plane_icon_size, 8, 80));
+            store.set('icon_edge', $('#opt_icon_edge').val() || DEFAULTS.icon_edge);
             store.set('map_center', $('#opt_map_center').prop('checked') ? 1 : 0);
             store.set('units', $('input[name=opt_units]:checked').val() || DEFAULTS.units);
             store.set('unit_size', num_range('#opt_unit_size', DEFAULTS.unit_size, 0.1, 100));
@@ -1173,6 +1300,7 @@
 
     function fill_options() {
         $('#opt_icon_size').val(settings.plane_icon_size);
+        $('#opt_icon_edge').val(settings.icon_edge);
         $('#opt_map_center').prop('checked', !!settings.map_center);
         $('input[name=opt_units]').filter('[value=' + settings.units + ']').prop('checked', true);
         $('#opt_unit_size').val(settings.unit_size);
@@ -1207,6 +1335,9 @@
         }
         if (!(settings.fullscreen_panels in PANEL_MODES)) {
             settings.fullscreen_panels = DEFAULTS.fullscreen_panels;
+        }
+        if (!(settings.icon_edge in EDGE_MODES)) {
+            settings.icon_edge = DEFAULTS.icon_edge;
         }
         settings.full_window = settings.full_window ? 1 : 0;
     }

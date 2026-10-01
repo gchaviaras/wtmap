@@ -643,8 +643,24 @@ function compareSummary(want, got, team) {
         eq(shape.mirrored * 2, shape.total - shape.details,
           icon + ': every body path needs exactly one mirrored copy');
         assert(shape.details <= 1, icon + ': unexpected detail lines');
+        const edge = await page.evaluate(() => window.wtmap.settings.icon_edge);
         shape.widths.forEach(w =>
-          assert(w > 0 && w < 1, icon + ': implausible stroke width ' + w));
+          assert(w >= 0 && w < 1, icon + ': implausible stroke width ' + w));
+        // With no outline chosen the paths must carry no stroke, and the
+        // shadow, when chosen, is a dark copy behind the fill.
+        const shadowed = await page.evaluate(() => {
+          const path = document.querySelector('#wtm-bluerow th.wtm-aircraft svg path');
+          return path ? path.getAttribute('style') || '' : '';
+        });
+        if (edge === 'shadow' || edge === 'both') {
+          assert(shape.widths.every(w => w > 0) === (edge === 'both'),
+            edge + ': body strokes should be ' + (edge === 'both' ? 'on' : 'off'));
+          assert(/fill:#000/.test(shadowed) === true,
+            edge + ': expected a dark copy behind the fill');
+        } else {
+          assert(!/fill:#000/.test(shadowed),
+            edge + ': expected no shadow copy');
+        }
       }
 
       // The bomber adds a nacelle and twin fins on top of its outline.
@@ -658,8 +674,10 @@ function compareSummary(want, got, team) {
       // currentColor resolved to grey rather than to the row.
       const colours = await page.evaluate(() => {
         function fill(rowId) {
-          const path = document.querySelector('#' + rowId +
-            ' th.wtm-aircraft svg path');
+          // the fill copies carry no inline style; the shadow copies do
+          const paths = [...document.querySelectorAll('#' + rowId +
+            ' th.wtm-aircraft svg path')];
+          const path = paths.find(p => !p.getAttribute('style'));
           return path ? getComputedStyle(path).fill : null;
         }
         const blue = fill('wtm-bluerow');
@@ -931,56 +949,124 @@ function compareSummary(want, got, team) {
       console.log('\n  (skipping the pixel level icon checks: they need the fixture)');
     }
 
-    await test('aircraft are drawn with the plane glyphs, rotated by heading', async () => {
-      if (!planesPage) return;
-      const glyphs = await planesPage.evaluate(() => {
+    await test('aircraft are drawn at the right place and follow the heading', async () => {
+      // The shapes are about as wide as they are long, so the principal axis of
+      // the ink says nothing about the heading. Instead: draw one aircraft
+      // pointing north and one pointing east, and check that the second is the
+      // first turned a quarter turn. That only holds if the drawing is rotated.
+      const shots = await planesPage.evaluate(() => {
         const c = document.getElementById('map-canvas');
-        const d = c.getContext('2d', {willReadFrequently: true})
-          .getImageData(0, 0, c.width, c.height).data;
-        const W = c.width;
+        const ctx = c.getContext('2d', {willReadFrequently: true});
 
-        // Ink statistics around a point: how much was painted, where its
-        // centre of mass is, and the angle of its principal axis.
-        function probe(fx, fy, isColour, radius) {
-          let n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
-          const cx = Math.round(fx), cy = Math.round(fy);
-          for (let y = cy - radius; y <= cy + radius; y++) {
-            for (let x = cx - radius; x <= cx + radius; x++) {
-              if (x < 0 || y < 0 || x >= W || y >= c.height) continue;
-              const i = (y * W + x) * 4;
-              if (d[i + 3] < 200 || !isColour(d[i], d[i + 1], d[i + 2])) continue;
-              n++;
-              sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+        function ink(dx, dy) {
+          window.map_objects.length = 0;
+          window.update_object_positions([{
+            type: 'aircraft', icon: 'Fighter', icon_bg: 'none',
+            x: 0.5, y: 0.5, dx, dy,
+            color: '#174DFF', 'color[]': [23, 77, 255], blink: 0,
+          }].slice());
+          window.redraw_map(0);
+          const d = ctx.getImageData(0, 0, c.width, c.height).data;
+          const pts = [];
+          for (let y = 0; y < c.height; y++) {
+            for (let x = 0; x < c.width; x++) {
+              const i = (y * c.width + x) * 4;
+              // the fill only: an edge or a shadow is dark, not blue
+              if (d[i + 3] > 150 && d[i + 2] > 180 && d[i] < 110) {
+                pts.push(x, y);
+              }
             }
           }
-          if (!n) return {px: 0};
-          const mx = sx / n, my = sy / n;
-          const vxx = sxx / n - mx * mx, vyy = syy / n - my * my, vxy = sxy / n - mx * my;
-          return {
-            px: n, dx: mx - fx, dy: my - fy,
-            axis: (0.5 * Math.atan2(2 * vxy, vxx - vyy) * 180 / Math.PI + 90) % 180,
-          };
+          return pts;
         }
-
-        const blue = (r, g, b) => b > 180 && r < 110 && g < 140;
-        const red = (r, g, b) => r > 180 && g < 110 && b < 110;
-
-        return {
-          // map_scale is 1 with the whole map visible, so screen = x * width
-          fighter: probe(0.30 * W, 0.30 * W, blue, 22),   // heading north
-          bomber: probe(0.50 * W, 0.30 * W, blue, 22),    // heading east
-          assault: probe(0.70 * W, 0.30 * W, red, 22),    // heading south-east
-        };
+        return {north: ink(0, -1), east: ink(1, 0)};
       });
 
-      for (const [name, want] of [['fighter', 90], ['bomber', 0], ['assault', 45]]) {
-        const g = glyphs[name];
-        assert(g.px > 20, name + ': only ' + g.px + ' pixels drawn');
-        near(g.dx, 0, 8, name + ': ink is off to the right');
-        near(g.dy, 0, 8, name + ': ink is off vertically');
-        const delta = Math.abs(((g.axis - want + 90) % 180) - 90);
-        near(delta, 0, 10, name + ': glyph axis');
+      function shape(points) {
+        const n = points.length / 2;
+        assert(n > 20, 'only ' + n + ' pixels of fill');
+        let cx = 0, cy = 0;
+        for (let i = 0; i < points.length; i += 2) {
+          cx += points[i];
+          cy += points[i + 1];
+        }
+        cx /= n;
+        cy /= n;
+        const set = new Set();
+        for (let i = 0; i < points.length; i += 2) {
+          set.add(Math.round(points[i] - cx) + ',' + Math.round(points[i + 1] - cy));
+        }
+        return {set, cx, cy};
       }
+
+      const a = shape(shots.north);
+      const b = shape(shots.east);
+      near(a.cx, b.cx, 2, 'both should be drawn at the same point');
+      near(a.cy, b.cy, 2, 'both should be drawn at the same point');
+
+      // A quarter turn towards the east maps (dx, dy) to (-dy, dx)
+      function overlap(map) {
+        let matched = 0;
+        a.set.forEach(key => {
+          const [dx, dy] = key.split(',').map(Number);
+          if (b.set.has(map(dx, dy).join(','))) {
+            matched += 1;
+          }
+        });
+        return matched / a.set.size;
+      }
+      const quarter = overlap((dx, dy) => [-dy, dx]);
+      const as_drawn = overlap((dx, dy) => [dx, dy]);
+
+      assert(quarter > 0.8,
+        'the east facing ink is not the north facing ink turned a quarter ' +
+        'way: only ' + Math.round(quarter * 100) + '% of the pixels line up');
+      assert(quarter > as_drawn * 1.15,
+        'turning the icon explains the drawing no better than leaving it ' +
+        'alone (' + Math.round(quarter * 100) + '% against ' +
+        Math.round(as_drawn * 100) + '%)');
+    });
+
+    // The map draws its own glyphs with a hardcoded 1px black stroke. The edge
+    // setting has to reach those too, 'none' included: that means stopping the
+    // stroke the map would draw, which only works by intercepting it.
+    await test('the edge setting applies to the map\'s own glyphs', async () => {
+      async function darkPixels(edge) {
+        return page.evaluate(edge => {
+          window.wtmap.settings.icon_edge = edge;
+          window.map_objects.length = 0;
+          window.update_object_positions([{
+            type: 'ground_model', icon: 'MediumTank', icon_bg: 'none',
+            x: 0.5, y: 0.5, color: '#174DFF', 'color[]': [23, 77, 255], blink: 0,
+          }].slice());
+          window.redraw_map(0);
+          const c = document.getElementById('map-canvas');
+          const d = c.getContext('2d', {willReadFrequently: true})
+            .getImageData(0, 0, c.width, c.height).data;
+          let dark = 0, blue = 0;
+          for (let y = 0; y < c.height; y++) {
+            for (let x = 0; x < c.width; x++) {
+              const i = (y * c.width + x) * 4;
+              if (Math.abs(x - c.width / 2) > 30 || Math.abs(y - c.height / 2) > 30) continue;
+              if (d[i + 3] < 40) continue;
+              if (d[i] < 70 && d[i + 1] < 70 && d[i + 2] < 70) dark += 1;
+              if (d[i + 2] > 180 && d[i] < 110) blue += 1;
+            }
+          }
+          return {dark, blue};
+        }, edge);
+      }
+
+      const bare = await darkPixels('none');
+      const edged = await darkPixels('outline');
+      await page.evaluate(() => { window.wtmap.settings.icon_edge = 'shadow'; });
+
+      assert(bare.dark <= 2,
+        'with no edge a tank should be all fill, found ' + bare.dark + ' dark pixels');
+      assert(bare.blue > 10, 'the tank is not being drawn: ' + bare.blue + ' blue pixels');
+      assert(edged.dark > bare.dark * 3,
+        'the map\'s own edge is ' + edged.dark + ' dark pixels against ' +
+        bare.dark + ' without one');
     });
 
     await test('ground units do not cover aircraft', async () => {
