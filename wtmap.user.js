@@ -265,8 +265,10 @@
 
         // All the shadows first, so none of them lands on top of a fill.
         if (style.shadow) {
+            // note the closing quote: without it the attribute never closes and
+            // the parser swallows every path that follows
             var shadow_attrs = ' style="fill:#000;stroke:none" transform="translate(' +
-                offset + ' ' + offset + ')';
+                offset + ' ' + offset + ')"';
             plane_bodies(kind).forEach(function (d) {
                 svg += path_element(d, shadow_attrs);
                 svg += path_element(d, shadow_attrs + ' scale(-1,1)');

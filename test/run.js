@@ -613,11 +613,31 @@ function compareSummary(want, got, team) {
     });
 
     // The canvas mirrors the shapes with a scale, the SVG with a transform.
-    // When only one half was emitted the summary drew a fuselage with a single
-    // wing, which nothing else here would have noticed.
+    // Two faults have shown up in this artwork: only one half was emitted, so
+    // the summary drew a fuselage with a single wing, and an attribute was left
+    // unclosed, which made the parser swallow the paths that followed it and
+    // left one half of the plane solid black. Both are checked against the
+    // parsed DOM rather than the markup string, because only the DOM shows what
+    // the browser actually drew. A count of matches in the string cannot: three
+    // mangled paths still satisfy "one body plus its mirror plus one detail".
     await test('aircraft artwork is drawn on both sides', async () => {
       const shapes = await page.evaluate(() => {
-        const out = {};
+        const mirrored = el => /scale\(-1,1\)/.test(el.getAttribute('transform') || '');
+        const shadowed = el => /fill:#000/.test(el.getAttribute('style') || '');
+        const out = {bodies: {}, malformed: []};
+
+        // every svg on the page: the summary cells and the dialog preview alike
+        document.querySelectorAll('svg').forEach(svg => {
+          [...svg.querySelectorAll('*')].forEach(el => {
+            [...el.attributes].forEach(attr => {
+              if (/[<>]/.test(attr.value)) {
+                out.malformed.push(el.tagName + '@' + attr.name + ' = ' +
+                  attr.value.slice(0, 50));
+              }
+            });
+          });
+        });
+
         ['Fighter', 'Bomber', 'Assault'].forEach(icon => {
           const cell = [...document.querySelectorAll('#wtm-mapsummary th')]
             .find(th => th.title === icon);
@@ -625,10 +645,26 @@ function compareSummary(want, got, team) {
             return;
           }
           const paths = [...cell.querySelectorAll('svg path')];
-          out[icon] = {
-            total: paths.length,
-            mirrored: paths.filter(p =>
-              (p.getAttribute('transform') || '').indexOf('scale(-1,1)') >= 0).length,
+          const bodies = {};
+          let shadows = 0;
+          paths.forEach(p => {
+            if (shadowed(p)) {
+              shadows += 1;
+              return;
+            }
+            if (p.classList.contains('wtm-detail')) {
+              return;
+            }
+            const d = p.getAttribute('d');
+            const rec = bodies[d] || (bodies[d] = {plain: 0, mirrored: 0});
+            rec[mirrored(p) ? 'mirrored' : 'plain'] += 1;
+          });
+          out.bodies[icon] = {
+            bodies: Object.keys(bodies).length,
+            // a body with a mate on only one side is a plane with one wing
+            unmatched: Object.values(bodies).filter(r =>
+              r.plain !== 1 || r.mirrored !== 1).length,
+            shadows,
             details: paths.filter(p => p.classList.contains('wtm-detail')).length,
             widths: paths.map(p => Number(p.getAttribute('stroke-width'))),
           };
@@ -636,59 +672,60 @@ function compareSummary(want, got, team) {
         return out;
       });
 
-      for (const [icon, shape] of Object.entries(shapes)) {
-        // Every body path is emitted twice, once mirrored; the detail lines are
-        // symmetric on their own and appear once. So the bodies, the mirrors and
-        // the details together account for every element.
-        eq(shape.mirrored * 2, shape.total - shape.details,
-          icon + ': every body path needs exactly one mirrored copy');
+      assert(shapes.malformed.length === 0,
+        'an attribute value swallowed markup: ' + shapes.malformed.join(' | '));
+
+      const edge = await page.evaluate(() => window.wtmap.settings.icon_edge);
+      for (const [icon, shape] of Object.entries(shapes.bodies)) {
+        eq(shape.unmatched, 0,
+          icon + ': every body path needs one copy and one mirrored copy');
         assert(shape.details <= 1, icon + ': unexpected detail lines');
-        const edge = await page.evaluate(() => window.wtmap.settings.icon_edge);
         shape.widths.forEach(w =>
           assert(w >= 0 && w < 1, icon + ': implausible stroke width ' + w));
         // With no outline chosen the paths must carry no stroke, and the
         // shadow, when chosen, is a dark copy behind the fill.
-        const shadowed = await page.evaluate(() => {
-          const path = document.querySelector('#wtm-bluerow th.wtm-aircraft svg path');
-          return path ? path.getAttribute('style') || '' : '';
-        });
         if (edge === 'shadow' || edge === 'both') {
           assert(shape.widths.every(w => w > 0) === (edge === 'both'),
             edge + ': body strokes should be ' + (edge === 'both' ? 'on' : 'off'));
-          assert(/fill:#000/.test(shadowed) === true,
-            edge + ': expected a dark copy behind the fill');
+          assert(shape.shadows > 0,
+            edge + ': expected dark copies behind the fill');
         } else {
-          assert(!/fill:#000/.test(shadowed),
-            edge + ': expected no shadow copy');
+          eq(shape.shadows, 0, edge + ': expected no shadow copy');
         }
       }
 
+      eq(shapes.bodies.Fighter.bodies, 1, 'the fighter is a single outline');
       // The bomber adds a nacelle and twin fins on top of its outline.
-      const bomber = shapes.Bomber;
-      assert(bomber && bomber.total - bomber.details >= 6,
+      assert(shapes.bodies.Bomber.bodies >= 3,
         'the bomber should draw its nacelle and twin fins as well, got ' +
-        (bomber && bomber.total));
+        shapes.bodies.Bomber.bodies);
 
-      // The artwork has to pick up the row colour. It did not for a while:
-      // the panel rule gives every descendant an explicit grey, so
-      // currentColor resolved to grey rather than to the row.
+      // The artwork has to pick up the row colour, on both halves. It did not
+      // for a while: the panel rule gives every descendant an explicit grey, so
+      // currentColor resolved to grey rather than to the row. And when an
+      // attribute swallowed markup, one half fell back to the SVG default,
+      // which is black.
       const colours = await page.evaluate(() => {
-        function fill(rowId) {
-          // the fill copies carry no inline style; the shadow copies do
+        const out = {};
+        ['wtm-bluerow', 'wtm-redrow'].forEach(rowId => {
           const paths = [...document.querySelectorAll('#' + rowId +
-            ' th.wtm-aircraft svg path')];
-          const path = paths.find(p => !p.getAttribute('style'));
-          return path ? getComputedStyle(path).fill : null;
-        }
-        const blue = fill('wtm-bluerow');
-        const red = fill('wtm-redrow');
-        return {blue, red,
-          blueText: getComputedStyle(document.querySelector('#wtm-bluerow th')).color,
-          redText: getComputedStyle(document.querySelector('#wtm-redrow th')).color};
+            ' th.wtm-aircraft svg path')]
+            .filter(p => !/fill:#000/.test(p.getAttribute('style') || ''));
+          const wanted = getComputedStyle(
+            document.querySelector('#' + rowId + ' th')).color;
+          out[rowId] = {
+            wanted,
+            halves: paths.length,
+            wrong: paths.filter(p => getComputedStyle(p).fill !== wanted).length,
+          };
+        });
+        return out;
       });
-      if (colours.blue && colours.red) {
-        eq(colours.blue, colours.blueText, 'blue row artwork colour');
-        eq(colours.red, colours.redText, 'red row artwork colour');
+      for (const [row, colour] of Object.entries(colours)) {
+        assert(colour.halves >= 2, row + ': too few halves drawn, ' + colour.halves);
+        eq(colour.wrong, 0,
+          row + ': artwork colour, ' + colour.wrong + ' of ' + colour.halves +
+          ' halves are not ' + colour.wanted);
       }
     });
 
