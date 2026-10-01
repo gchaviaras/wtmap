@@ -1,10 +1,9 @@
 // ==UserScript==
 // @name         WT map
-// @namespace    https://github.com/slikts/wtmap
+// @namespace    https://github.com/gchaviaras/wtmap
 // @version      1.0.0
-// @description  Enhances the War Thunder browser map: different plane icons (F-39/IL-2/Ju 88) with heading, off-screen contacts on the map edge, map follows the player, near real-time updates, per-team object summary in the map panel, distance readouts in the title bar, persistent zoom, optional state/indicator/chat panels. Port of the "WT map" Chrome extension (MIT, slikts) to a userscript that patches the map page in place.
-// @author       slikts (original extension)
-// @license      MIT
+// @description  Enhances the War Thunder browser map: aircraft get a silhouette and a heading, off-map contacts are pinned to the edge, the map follows the player, updates are near real-time, and there is a per-team contact summary, distance readouts in the title bar, optional state/indicator tables, and fullscreen or full window layouts.
+// @author       gchaviaras
 // @match        http://localhost:8111/*
 // @match        http://127.0.0.1:8111/*
 // @include      http://*:8111/*
@@ -15,15 +14,16 @@
 // ==/UserScript==
 
 /*
- * Why this works as a userscript but not as a content script:
- * the extension had to download the map page, re-eval its scripts in an
- * extension page and hide the originals, because content scripts cannot touch
- * the page's JavaScript environment. A userscript injected into the page itself
- * can, so this one monkey-patches the map code where it already lives and takes
- * over its timers.
+ * How this works: the script runs in the page's own JavaScript environment at
+ * document-start, so it can reach the functions the map defines, patch them
+ * where they already live, and take over the two timers the map starts.
  *
  * Everything the page defines with `var`/`function` lives on `window`, so all
  * patches go through `W.*`. Nothing is declared globally by this script.
+ *
+ * No third party code or artwork is bundled: the aircraft shapes are polygons
+ * further down, and the only font used is the map's own icon font, which the
+ * page already loads by itself.
  */
 
 (function () {
@@ -142,18 +142,111 @@
      * icons                                                              *
      * ---------------------------------------------------------------- */
 
-    // Glyphs of the bundled plane_icons font (F-39, Ju 88, IL-2) and their
-    // metrics, same mapping the extension used.
-    var PLANE_GLYPHS = {
-        Fighter: 'a',
-        Bomber: 'b',
-        Assault: 'c'
+    /* ---------------------------------------------------------------- *
+     * aircraft silhouettes                                             *
+     *                                                                    *
+     * Three top-down outlines, authored here as polygons in a -1..1 space  *
+     * with the nose towards -y (north). They are drawn to be told apart at *
+     * 25 px, which is all they have to do: a map icon, not a technical    *
+     * drawing.                                                            *
+     *                                                                    *
+     * The polygons are the fuselage, the wings and the tailplane. Wings    *
+     * are given once, for the right hand side; draw_plane mirrors them.    *
+     * ---------------------------------------------------------------- */
+
+    var PLANE_SHAPES = {
+        // single engine, straight wings
+        Fighter: [
+            [[0, -1.00], [0.07, -0.86], [0.11, -0.55], [0.13, -0.10],
+             [0.12, 0.28], [0.07, 0.68], [0.03, 0.90], [-0.03, 0.90],
+             [-0.07, 0.68], [-0.12, 0.28], [-0.13, -0.10], [-0.11, -0.55],
+             [-0.07, -0.86]],
+            [[0.10, -0.20], [0.95, 0.08], [0.95, 0.21], [0.11, 0.15]],
+            [[0.06, 0.54], [0.38, 0.77], [0.38, 0.86], [0.06, 0.79]]
+        ],
+        // twin engine, longer and wider, twin fin
+        Bomber: [
+            [[0, -1.00], [0.08, -0.80], [0.12, -0.50], [0.15, -0.06],
+             [0.13, 0.34], [0.07, 0.74], [0.03, 0.96], [-0.03, 0.96],
+             [-0.07, 0.74], [-0.13, 0.34], [-0.15, -0.06], [-0.12, -0.50],
+             [-0.08, -0.80]],
+            [[0.13, -0.16], [1.00, 0.14], [1.00, 0.27], [0.13, 0.19]],
+            [[0.06, 0.62], [0.44, 0.87], [0.44, 0.96], [0.06, 0.87]]
+        ],
+        // stubby, thick wings, short tail
+        Assault: [
+            [[0, -1.00], [0.10, -0.82], [0.15, -0.52], [0.17, -0.08],
+             [0.15, 0.28], [0.09, 0.64], [0.04, 0.86], [-0.04, 0.86],
+             [-0.09, 0.64], [-0.15, 0.28], [-0.17, -0.08], [-0.15, -0.52],
+             [-0.10, -0.82]],
+            [[0.15, -0.12], [0.88, 0.18], [0.88, 0.33], [0.15, 0.24]],
+            [[0.08, 0.50], [0.36, 0.70], [0.36, 0.80], [0.08, 0.73]]
+        ]
     };
+
+    var PLANE_ORDER = ['Fighter', 'Bomber', 'Assault'];
+
+    // How big each type is drawn relative to the configured icon size.
     var PLANE_SCALE = {
-        a: 0.92,
-        b: 1.08,
-        c: 0.96
+        Fighter: 1.00,
+        Bomber: 1.10,
+        Assault: 1.02
     };
+
+    function is_plane(icon) {
+        return icon in PLANE_SHAPES;
+    }
+
+    // The same outline as an SVG path, so the summary table can use it without
+    // a font. Fitted to a 200x200 viewBox.
+    function plane_path(kind) {
+        return PLANE_SHAPES[kind].map(function (polygon) {
+            return 'M' + polygon.map(function (point) {
+                return (point[0] * 100).toFixed(2) + ' ' + (point[1] * 100).toFixed(2);
+            }).join('L') + 'Z';
+        }).join('');
+    }
+
+    function draw_plane(ctx, kind, sx, sy, dir, fill, alpha, size, outline) {
+        var scale = size / 2 * (PLANE_SCALE[kind] || 1);
+
+        ctx.save();
+        ctx.translate(sx, sy);
+        if (dir) {
+            ctx.rotate(dir);
+        }
+
+        // One path holding the fuselage and both wings, so the seams where they
+        // meet are covered by the fill and never show as lines.
+        ctx.beginPath();
+        PLANE_SHAPES[kind].forEach(function (polygon) {
+            [1, -1].forEach(function (side) {
+                for (var i = 0; i < polygon.length; i++) {
+                    var x = polygon[i][0] * scale * side;
+                    var y = polygon[i][1] * scale;
+                    if (i === 0) {
+                        ctx.moveTo(x, y);
+                    } else {
+                        ctx.lineTo(x, y);
+                    }
+                }
+                ctx.closePath();
+            });
+        });
+
+        if (outline) {
+            // Stroking before filling leaves the outer half of the outline
+            // visible as a clean silhouette edge.
+            ctx.lineJoin = 'round';
+            ctx.lineWidth = Math.max(1.5, size / 11);
+            ctx.strokeStyle = alpha ? hex_to_rgba(outline, alpha) : outline;
+            ctx.stroke();
+        }
+        ctx.fillStyle = alpha ? hex_to_rgba(fill, alpha) : fill;
+        ctx.fill();
+
+        ctx.restore();
+    }
 
     // The map's own Icons font mapping, so the summary table shows the same
     // glyphs that are drawn on the map.
@@ -184,9 +277,11 @@
                 icon.indexOf('respawn_base') !== 0;
     }
 
+    // Aircraft are drawn as artwork, everything else uses a glyph from the
+    // map's own icon font so the summary matches what is on the map.
     function icon_glyph(icon) {
-        if (icon in PLANE_GLYPHS) {
-            return PLANE_GLYPHS[icon];
+        if (is_plane(icon)) {
+            return '';
         }
         if (icon in ICON_GLYPHS) {
             return ICON_GLYPHS[icon];
@@ -262,25 +357,6 @@
         return c[0] > c[2] + 32 ? 'red' : 'blue';
     }
 
-    function draw_text_icon(ctx, text, sx, sy, dir, fill, alpha, font_size, stroke) {
-        ctx.save();
-        ctx.translate(sx, sy);
-        if (dir) {
-            ctx.rotate(dir);
-        }
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = alpha ? hex_to_rgba(fill, alpha) : fill;
-        ctx.lineWidth = 1;
-        ctx.font = font_size + 'px plane_icons';
-        ctx.fillText(text, 0, 0);
-        if (stroke) {
-            ctx.strokeStyle = alpha ? hex_to_rgba(stroke, alpha) : stroke;
-            ctx.strokeText(text, 0, 0);
-        }
-        ctx.restore();
-    }
-
     // Move an off-map aircraft onto the canvas border, along the line from the
     // canvas centre through its real position.
     function clamp_to_edge(sx, sy, width, height, offset) {
@@ -342,8 +418,7 @@
             var sx = item.x * _canvas.width * W.map_scale + W.map_pan[0];
             var sy = item.y * _canvas.height * W.map_scale + W.map_pan[1];
 
-            var glyph = PLANE_GLYPHS[item.icon];
-            if (!glyph) {
+            if (!is_plane(item.icon)) {
                 return _draw_map_object.apply(this, arguments);
             }
 
@@ -352,7 +427,6 @@
             var dir = isFinite(dx) && isFinite(dy) ? Math.atan2(dx, -dy) : 0;
 
             var color = W.calcMapObjectColor(item);
-            var font_size = settings.plane_icon_size * (PLANE_SCALE[glyph] || 1);
             var offscreen = sx > _canvas.width || sx < 0 ||
                             sy > _canvas.height || sy < 0;
 
@@ -362,8 +436,8 @@
                 sy = pos.y;
             }
 
-            draw_text_icon(ctx, glyph, sx, sy, dir, color,
-                    offscreen ? '0.35' : null, font_size, '#000000');
+            draw_plane(ctx, item.icon, sx, sy, dir, color,
+                    offscreen ? '0.35' : null, settings.plane_icon_size, '#000000');
         };
 
         // --- sorting, summary and title bar ---
@@ -533,11 +607,17 @@
             var glyph = icon_glyph(icon);
             [blue, red].forEach(function (row, team) {
                 var th = doc.createElement('th');
-                th.textContent = counts[team] ? glyph : '';
                 th.title = icon;
-                if (icon in PLANE_GLYPHS) {
-                    th.className = 'wtm-aircraft';
-                    th.style.fontSize = (23 * (PLANE_SCALE[glyph] || 1)) + 'px';
+                if (counts[team]) {
+                    if (is_plane(icon)) {
+                        th.className = 'wtm-aircraft';
+                        var size = Math.round(21 * (PLANE_SCALE[icon] || 1));
+                        th.innerHTML = '<svg viewBox="-105 -105 210 210" width="' +
+                            size + '" height="' + size + '"><path d="' +
+                            plane_path(icon) + '"/></svg>';
+                    } else {
+                        th.textContent = glyph;
+                    }
                 }
                 var td = doc.createElement('td');
                 td.textContent = counts[team] ? counts[team] : '';
@@ -969,15 +1049,20 @@
                 '<span id="wtm-status"></span></p>' +
                 '</div></div>').appendTo(doc.body);
 
-        var preview = [];
-        Object.keys(PLANE_SCALE).forEach(function (key) {
-            preview.push($('<span></span>').text(key).appendTo('#wtm-plane_icon_preview'));
+        var preview = PLANE_ORDER.map(function (kind) {
+            var $slot = $('<span class="wtm-preview"></span>')
+                .attr('title', kind)
+                .appendTo('#wtm-plane_icon_preview');
+            $('<svg viewBox="-105 -105 210 210"><path d="' + plane_path(kind) +
+                '"/></svg>').appendTo($slot);
+            return $slot;
         });
 
         $('#opt_icon_size').on('input', function () {
             var size = parseFloat($(this).val()) || DEFAULTS.plane_icon_size;
-            preview.forEach(function ($icon, i) {
-                $icon.css('fontSize', (size * PLANE_SCALE[['a', 'b', 'c'][i]]) + 'px');
+            preview.forEach(function ($slot, i) {
+                $slot.children('svg').attr('width', Math.round(size * (PLANE_SCALE[PLANE_ORDER[i]] || 1)))
+                    .attr('height', Math.round(size * (PLANE_SCALE[PLANE_ORDER[i]] || 1)));
             });
         });
 
@@ -1260,32 +1345,6 @@
         position_panels();
     }
 
-    function load_fonts() {
-        return new Promise(function (resolve) {
-            var done = false;
-            function finish() {
-                if (!done) {
-                    done = true;
-                    resolve();
-                }
-            }
-            try {
-                if (doc.fonts && doc.fonts.load) {
-                    var loaded = doc.fonts.load('20px plane_icons');
-                    if (loaded && loaded.then) {
-                        loaded.then(finish, finish);
-                    } else {
-                        finish();
-                    }
-                } else {
-                    finish();
-                }
-            } catch (e) {
-                finish();
-            }
-            W.setTimeout(finish, 2000);
-        });
-    }
 
     /* ---------------------------------------------------------------- *
      * boot                                                               *
@@ -1387,9 +1446,7 @@
             full_window: toggle_full_window
         };
 
-        load_fonts().then(function () {
-            start_pollers();
-        });
+        start_pollers();
     }
 
     function log(e) {
@@ -1399,7 +1456,12 @@
     }
 
     /* ---------------------------------------------------------------- *
-     * stylesheet (adapted from the extension's main.css)                *
+     * stylesheet                                                         *
+     *                                                                    *
+     * Written for this script: a dark caption bar over the map, a column  *
+     * of panels beside it, and a couple of layout modes for fullscreen.   *
+     * The map's own page stylesheet is left alone; these rules are scoped  *
+     * to the panel ids and classes this script creates.                   *
      * ---------------------------------------------------------------- */
 
     function install_style() {
@@ -1409,148 +1471,200 @@
         var style = doc.createElement('style');
         style.id = 'wtm-style';
         style.textContent = [
-            "@font-face { font-family: 'plane_icons';",
-            "src: url('data:font/ttf;charset=utf-8;base64,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HyAcHwAAAAwAlgABAAAAAAABAAkAFAABAAAAAAACAAcALgABAAAAAAADACUAggABAAAAAAAEAAgAugABAAAAAAAFAAsA2wABAAAAAAAGAAgA+QADAAEECQABABIAAAADAAEECQACAA4AHgADAAEECQADAEoANgADAAEECQAEABAAqAADAAEECQAFABYAwwADAAEECQAGABAA5wBTAFYARwBGAG8AbgB0ACAAMAAAU1ZHRm9udCAwAABSAGUAZwB1AGwAYQByAABSZWd1bGFyAABGAG8AbgB0AEYAbwByAGcAZQAgADIALgAwACAAOgAgAGYAbwBuAHQAMwA3ADgAMQAgADoAIAAxADMALQAxADIALQAyADAAMQAzAABGb250Rm9yZ2UgMi4wIDogZm9udDM3ODEgOiAxMy0xMi0yMDEzAABmAG8AbgB0ADMANwA4ADEAAGZvbnQzNzgxAABWAGUAcgBzAGkAbwBuACAAMQAuADAAAFZlcnNpb24gMS4wAABmAG8AbgB0ADMANwA4ADEAAGZvbnQzNzgxAAACAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAYAAAABAAIBAgEDAQQHRmlnaHRlcgZCb21iZXIIQXR0YWNrZXIAAAAAAAH//wACAAEAAAAOAAAAGAAAAAAAAgABAAMABQABAAQAAAACAAAAAAABAAAAAMw9os8AAAAAztBfzQAAAADO0F/N') format('truetype'); }",
-
             "body { margin: 5px; }",
 
-            ".wtm-panel, .wtm-panel * { font-family: Consolas, 'Lucida Console', monospace;",
-            "font-size: 11px; color: #aaa; line-height: 21px; white-space: nowrap; }",
-            ".wtm-panel { float: left; border-radius: 1px; background: rgba(40, 40, 40, .7);",
-            "border: 1px solid #555; border-top-style: none; }",
-            ".wtm-panel .wtm-caption { text-indent: .35em; line-height: 21px; height: 21px;",
-            "width: 100%; color: #ddd; border-radius: 1px 1px 0 0; overflow: hidden;",
-            "background: linear-gradient(#606060, #555); }",
-            ".wtm-panel .wtm-caption-title { font-weight: bold; }",
-            ".wtm-caption-title:empty { display: none; }",
+            /* --- panels ------------------------------------------------ */
+            ".wtm-panel, .wtm-panel * {",
+            "  font: 11px/21px Consolas, 'Lucida Console', monospace;",
+            "  color: #aaa; white-space: nowrap;",
+            "}",
+            ".wtm-panel {",
+            "  float: left; box-sizing: border-box;",
+            "  background: rgba(40, 40, 40, .75);",
+            "  border: 1px solid #555; border-top: none;",
+            "}",
+            ".wtm-panel .wtm-caption {",
+            "  height: 21px; overflow: hidden; text-indent: .35em;",
+            "  color: #ddd; font-weight: bold;",
+            "  background: linear-gradient(#606060, #555);",
+            "}",
+            ".wtm-panel.off .wtm-panel-contents { display: none; }",
 
-            "#wtm-map-root { position: relative; border: 1px solid #555;",
-            "border-top-style: none; border-radius: 0 0 1px 1px; }",
+            /* --- map panel --------------------------------------------- */
+            "#wtm-map-root { position: relative; }",
+            "#wtm-map-root:after {",
+            "  content: 'Use the mouse wheel to zoom, drag to pan';",
+            "  position: absolute; top: 100%; right: 0;",
+            "  display: none; color: #888;",
+            "}",
+            "#wtm-map-root:hover:after { display: block; }",
             "#wtm-map { line-height: 0; }",
             "#map-canvas { display: block; cursor: -webkit-grab; }",
             "#map-canvas:active { cursor: -webkit-grabbing; }",
-
-            "#wtm-mapinfo { float: right; color: #aaa; }",
+            "#wtm-mapinfo { float: right; font-weight: normal; }",
             "#wtm-mapscale:before { content: 'Scale: '; }",
             "#wtm-mapscale:after { content: '\\00d7'; }",
             "#wtm-mapdimensions:before { content: 'Map: '; }",
             "#wtm-mapgrid:before { content: 'Grid: '; }",
             "#wtm-mapdimensions, #wtm-mapgrid, #wtm-mapscale { margin: 0 .7em; }",
 
-            "#wtm-map-root:after { content: 'Use the mouse wheel to zoom, drag to pan';",
-            "position: absolute; top: 100%; right: 0; display: none; color: #888; }",
-            "#wtm-map-root:hover:after { display: block; }",
-
-            "#wtm-mapsummary { position: absolute; max-width: 100%; margin-top: 4px;",
-            "top: 100%; border-collapse: collapse; line-height: 1em; }",
-            "#wtm-mapsummary th { font-family: Icons; font-size: 26px; padding: 0 4px 0 1px;",
-            "-webkit-text-stroke-width: 1px; -webkit-text-stroke-color: #000; }",
-            "#wtm-mapsummary th.wtm-aircraft { font-family: plane_icons; }",
-            "#wtm-mapsummary td { font-size: 11px; }",
-            "#wtm-redrow th { color: #e70000; }",
-            "#wtm-bluerow th { color: #145cff; }",
-
-            "#wtm-sidepanels { position: absolute; top: 5px; }",
-            "#wtm-sidepanels .wtm-panel { margin: 0 5px 5px 0; }",
-            ".wtm-panel.off .wtm-panel-contents { display: none; }",
-            ".wtm-toggle { float: right; white-space: nowrap; padding-left: 1em; }",
+            /* --- buttons ----------------------------------------------- */
+            ".wtm-buttons { display: flex; gap: 3px; float: right; }",
+            ".wtm-toggle { float: right; padding-left: 1em; }",
             ".wtm-toggle input { margin: 0 5px 0 3px; position: relative; top: 2px; }",
             ".wtm-toggle label { position: relative; top: 2px; }",
-            ".wtm-icon { cursor: pointer; font-size: 13px; line-height: 15px;",
-            "padding: 0 5px; margin: 2px 0 0 3px; color: #ccc; background: #4a4a4a;",
-            "border: 1px solid #666; border-radius: 2px; vertical-align: middle; }",
+            ".wtm-icon {",
+            "  cursor: pointer; vertical-align: middle;",
+            "  margin: 3px 0 0 3px; padding: 0 5px;",
+            "  font: 13px/15px sans-serif; color: #ccc;",
+            "  background: #4a4a4a; border: 1px solid #666; border-radius: 2px;",
+            "}",
             ".wtm-icon:hover { background: #5a5a5a; color: #fff; }",
             ".wtm-icon.on { background: #2b6cb0; border-color: #4a90d9; color: #fff; }",
-            ".wtm-buttons { display: flex; gap: 3px; }",
 
-            "table.wtm-data { width: 300px; border-collapse: collapse;",
-            "table-layout: fixed; position: relative; }",
-            "table.wtm-data th, table.wtm-data td { border-color: rgba(255, 255, 255, .035);",
-            "border-style: none; border-width: 1px; text-align: left; padding: 0 .35em;",
-            "line-height: 1.5em; overflow: hidden; text-overflow: ellipsis; }",
-            "table.wtm-data th { border-bottom-style: solid; }",
-            "table.wtm-data td { border-left-style: solid; border-bottom-style: solid; }",
+            /* --- contact summary under the map ------------------------- */
+            "#wtm-mapsummary {",
+            "  position: absolute; top: 100%; left: 0; margin-top: 4px;",
+            "  border-collapse: collapse; line-height: 1em;",
+            "}",
+            "#wtm-mapsummary th {",
+            "  font-family: Icons; font-size: 26px; font-weight: normal;",
+            "  padding: 0 4px 0 1px;",
+            "  -webkit-text-stroke-width: 1px; -webkit-text-stroke-color: #000;",
+            "}",
+            "#wtm-mapsummary td { font-size: 11px; padding: 0; }",
+            "#wtm-mapsummary svg { display: block; }",
+            "#wtm-mapsummary .wtm-aircraft svg { fill: currentColor; }",
+            "#wtm-mapsummary svg path {",
+            "  stroke: #000; stroke-width: 6; stroke-linejoin: round;",
+            "}",
+            "#wtm-bluerow th { color: #145cff; }",
+            "#wtm-redrow th { color: #e70000; }",
+
+            /* --- side panels ------------------------------------------- */
+            "#wtm-sidepanels { position: absolute; top: 5px; }",
+            "#wtm-sidepanels > * { margin: 0 5px 5px 0; }",
+            "table.wtm-data {",
+            "  width: 300px; border-collapse: collapse; table-layout: fixed;",
+            "  position: relative;",
+            "}",
+            "table.wtm-data th, table.wtm-data td {",
+            "  border: 1px solid rgba(255, 255, 255, .035); border-top: none;",
+            "  padding: 0 .35em; line-height: 1.5em;",
+            "  text-align: left; overflow: hidden; text-overflow: ellipsis;",
+            "}",
             "table.wtm-data tr:first-child th, table.wtm-data tr:first-child td {",
-            "border-top-style: none; }",
-            "table.wtm-data tr:last-child th, table.wtm-data tr:last-child td {",
-            "border-bottom-style: none; }",
+            "  border-top: none;",
+            "}",
             "table.wtm-data tr { cursor: pointer; }",
-            "table.wtm-data tr:hover, table.wtm-data tr.hl { background: rgba(255, 255, 255, .05); }",
+            "table.wtm-data tr:hover, table.wtm-data tr.hl {",
+            "  background: rgba(255, 255, 255, .05);",
+            "}",
             "table.wtm-data tr.hl th, table.wtm-data tr.hl td { color: #ddd; }",
             "table.wtm-data tr.hl td { font-size: 2em; }",
-            "table.wtm-data:after { display: none; content: 'Click rows to highlight';",
-            "position: absolute; top: 100%; left: 0; color: #888; }",
+            "table.wtm-data:after {",
+            "  content: 'Click rows to highlight'; display: none;",
+            "  position: absolute; top: 100%; left: 0; color: #888;",
+            "}",
             "table.wtm-data:hover:after { display: block; }",
 
-            "#wtm-options { display: none; position: fixed; top: 0; right: 0; bottom: 0;",
-            "left: 0; z-index: 1000; background: rgba(0, 0, 0, .6); }",
-            "#wtm-options-inner { position: absolute; top: 50%; left: 50%;",
-            "transform: translate(-50%, -50%); width: 460px; padding: 15px 20px;",
-            "background: #3a3a3a; color: #ddd; border: 1px solid #666; border-radius: 3px;",
-            "box-shadow: 0 5px 30px rgba(0, 0, 0, .5); }",
-            "#wtm-options-inner h2 { margin: 0 0 12px; font-size: 15px; font-weight: normal;",
-            "border-bottom: 1px solid #555; padding-bottom: 6px; }",
+            /* --- the map's own panels, restyled to match ---------------- */
+            "#map-root, #indicators-root, #state-root { display: none !important; }",
+            "#draghandle { cursor: default !important; }",
+            ".wtm-adopted {",
+            "  position: static !important; float: left;",
+            "  width: 300px !important; height: auto !important; max-height: 152px;",
+            "  margin: 0 5px 5px 0; overflow: hidden;",
+            "  background: rgba(40, 40, 40, .75);",
+            "  border: 1px solid #555; border-top: none;",
+            "}",
+            ".wtm-adopted .caption {",
+            "  display: block; height: 21px; line-height: 21px; overflow: hidden;",
+            "  text-indent: .35em; color: #ddd; font-weight: bold;",
+            "  background: linear-gradient(#606060, #555);",
+            "}",
+            ".wtm-adopted .wtm-caption-title { font-weight: bold; }",
+            "#wtm-sidepanels .wtm-adopted #draghandle { display: none; }",
+            ".wtm-adopted #textlines {",
+            "  overflow: auto; width: 100%; height: 128px;",
+            "  font-size: 11px; line-height: 1.4em;",
+            "}",
+            ".wtm-adopted .chat-line { white-space: normal; }",
+            ".wtm-adopted #objectives-primary, .wtm-adopted #objectives-secondary {",
+            "  overflow: auto; max-height: 128px; padding: 0 4px;",
+            "}",
+            ".wtm-adopted h3 {",
+            "  margin: 3px 0 3px 6px; color: #999;",
+            "  font-size: 11px; font-weight: bold;",
+            "}",
+            ".wtm-adopted div.objective {",
+            "  padding: 0 2px; color: #ddd;",
+            "  font-size: 11px; line-height: 1.4em; white-space: normal;",
+            "}",
+
+            /* --- options dialog ---------------------------------------- */
+            "#wtm-options {",
+            "  display: none; position: fixed; top: 0; right: 0; bottom: 0; left: 0;",
+            "  z-index: 1000; background: rgba(0, 0, 0, .6);",
+            "}",
+            "#wtm-options-inner {",
+            "  position: absolute; top: 50%; left: 50%;",
+            "  transform: translate(-50%, -50%);",
+            "  width: 470px; padding: 15px 20px;",
+            "  background: #3a3a3a; color: #ddd;",
+            "  border: 1px solid #666; border-radius: 3px;",
+            "  box-shadow: 0 5px 30px rgba(0, 0, 0, .5);",
+            "}",
+            "#wtm-options-inner h2 {",
+            "  margin: 0 0 12px; padding-bottom: 6px;",
+            "  font-size: 15px; font-weight: normal;",
+            "  border-bottom: 1px solid #555;",
+            "}",
             "#wtm-options-inner table { border-collapse: collapse; }",
-            "#wtm-options-inner td { padding: 3px 8px 3px 0; white-space: nowrap;",
-            "font-size: 12px; }",
+            "#wtm-options-inner td {",
+            "  padding: 3px 8px 3px 0; white-space: nowrap; font-size: 12px;",
+            "}",
             "#wtm-options-inner .input_number { width: 4em; }",
             "#wtm-options-inner label { position: relative; top: -1px; }",
-            "#wtm-options-inner .wtm-note { color: #888; font-size: 11px; padding-left: 8px; }",
-            "#wtm-plane_icon_preview { font-family: plane_icons; color: #e33;",
-            "position: absolute; white-space: nowrap; letter-spacing: .1em; }",
+            "#wtm-options-inner .wtm-note { padding-left: 8px; color: #888; font-size: 11px; }",
+            "#wtm-plane_icon_preview { display: inline-block; padding-left: 10px; }",
+            "#wtm-plane_icon_preview .wtm-preview { display: inline-block; }",
+            "#wtm-plane_icon_preview svg { fill: #e33; display: block; }",
+            "#wtm-plane_icon_preview svg path {",
+            "  stroke: #000; stroke-width: 6; stroke-linejoin: round;",
+            "}",
             "#wtm-options-buttons { margin: 15px 0 0; }",
-            "#wtm-options-buttons button { cursor: pointer; position: relative; top: -1px; }",
-            "#wtm-status { color: #8f8; padding-left: 10px; }",
+            "#wtm-options-buttons button { position: relative; top: -1px; cursor: pointer; }",
+            "#wtm-status { padding-left: 10px; color: #8f8; }",
 
-            /* --- layout modes ---------------------------------------------------- */
+            /* --- layout modes ------------------------------------------ */
             "body.wtm-fullscreen-mode { overflow: hidden; }",
             "body.wtm-mode-hidden #wtm-sidepanels,",
             "body.wtm-mode-window #wtm-sidepanels { display: none; }",
-            "body.wtm-mode-overlay #wtm-sidepanels { position: fixed; top: 30px;",
-            "right: 8px; left: auto; z-index: 30; width: 305px;",
-            "max-height: calc(100% - 40px); overflow: auto; opacity: .92; }",
+            "body.wtm-mode-overlay #wtm-sidepanels {",
+            "  position: fixed; top: 30px; right: 8px; left: auto; z-index: 30;",
+            "  width: 305px; max-height: calc(100% - 40px); overflow: auto; opacity: .92;",
+            "}",
             "body.wtm-mode-overlay #wtm-sidepanels:hover { opacity: 1; }",
             "body.wtm-mode-overlay .wtm-panel,",
-            "body.wtm-mode-overlay .wtm-adopted { background: rgba(20, 20, 20, .8); }",
-            "body.wtm-mode-window #wtm-map-root { border: none; }",
+            "body.wtm-mode-overlay .wtm-adopted { background: rgba(20, 20, 20, .85); }",
             "body.wtm-mode-window { margin: 0; }",
+            "body.wtm-mode-window #wtm-map-root,",
+            "body.wtm-mode-overlay #wtm-map-root { z-index: 10; }",
+            "body.wtm-mode-window #wtm-map-root,",
+            "body.wtm-mode-overlay #wtm-map-root,",
+            "body.wtm-mode-hidden #wtm-map-root { border: none; }",
             "body.wtm-mode-window #wtm-map-root:after,",
             "body.wtm-mode-overlay #wtm-map-root:after,",
             "body.wtm-mode-hidden #wtm-map-root:after { display: none !important; }",
-            "body.wtm-mode-window #wtm-map,",
-            "body.wtm-mode-overlay #wtm-map,",
-            "body.wtm-mode-hidden #wtm-map { line-height: 0; }",
-            /* no room is reserved for the summary in these modes, so it floats
-               over the bottom of the map instead */
+            /* no room is reserved for the summary in these modes, so it floats */
             "body.wtm-mode-window #wtm-mapsummary,",
             "body.wtm-mode-overlay #wtm-mapsummary,",
-            "body.wtm-mode-hidden #wtm-mapsummary { position: fixed; top: auto;",
-            "left: 8px; bottom: 8px; margin: 0; padding: 2px 5px;",
-            "background: rgba(40, 40, 40, .75); border-radius: 2px; z-index: 25; }",
-            /* the caption stays reachable so the modes can be left again */
-            "body.wtm-mode-window #wtm-map-root,",
-            "body.wtm-mode-overlay #wtm-map-root { z-index: 10; }",
-
-            "#map-root, #indicators-root, #state-root { display: none !important; }",
-            "#draghandle { cursor: default !important; }",
-
-            ".wtm-adopted { position: static !important; float: left; width: 300px !important;",
-            "height: auto !important; max-height: 152px; margin: 0 5px 5px 0;",
-            "background: rgba(40, 40, 40, .7); overflow: hidden;",
-            "border: 1px solid #555; border-top-style: none; }",
-            ".wtm-adopted .caption { display: block; height: 21px; line-height: 21px;",
-            "overflow: hidden; color: #ddd; background: linear-gradient(#606060, #555);",
-            "text-indent: .35em; }",
-            "#wtm-sidepanels .wtm-adopted #draghandle { display: none; }",
-            ".wtm-adopted #textlines { overflow: auto; width: 100%; height: 128px;",
-            "font-size: 11px; line-height: 1.4em; }",
-            ".wtm-adopted .chat-line { white-space: normal; }",
-            ".wtm-adopted #objectives-primary, .wtm-adopted #objectives-secondary {",
-            "overflow: auto; max-height: 128px; padding: 0 4px; }",
-            ".wtm-adopted h3 { font-size: 11px; font-weight: bold; color: #999;",
-            "margin: 3px 0 3px 6px; }",
-            ".wtm-adopted div.objective { font-size: 11px; color: #ddd; line-height: 1.4em;",
-            "white-space: normal; padding: 0 2px; }"
+            "body.wtm-mode-hidden #wtm-mapsummary {",
+            "  position: fixed; top: auto; left: 8px; bottom: 8px; z-index: 25;",
+            "  margin: 0; padding: 2px 5px;",
+            "  background: rgba(40, 40, 40, .75); border-radius: 2px;",
+            "}"
         ].join('\n');
 
         (doc.head || doc.documentElement).appendChild(style);

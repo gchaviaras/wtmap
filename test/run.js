@@ -199,14 +199,16 @@ async function getJson(base, path) {
   return (await fetch(base + path)).json();
 }
 
-const PLANE_GLYPHS = {Fighter: 'a', Bomber: 'b', Assault: 'c'};
+// Aircraft are drawn as vector artwork, everything else as a glyph from the
+// map's own icon font.
+const PLANES = ['Fighter', 'Bomber', 'Assault'];
 const MAP_GLYPHS = {
   Airdefence: '4', Structure: '5', waypoint: '6', capture_zone: '7',
   bombing_point: '8', defending_point: '9',
 };
 
 function glyphOf(icon) {
-  return PLANE_GLYPHS[icon] || MAP_GLYPHS[icon] || icon.charAt(0);
+  return MAP_GLYPHS[icon] || icon.charAt(0);
 }
 
 function isCounted(o) {
@@ -246,8 +248,10 @@ async function readSummary(page) {
       const out = {};
       const cells = document.querySelectorAll('#' + id + ' > *');
       for (let i = 0; i < cells.length; i += 2) {
+        const svg = cells[i].querySelector('svg path');
         out[cells[i].title] = {
           glyph: cells[i].textContent,
+          path: svg ? svg.getAttribute('d') : null,
           count: cells[i + 1].textContent,
           font: getComputedStyle(cells[i]).fontFamily.split(',')[0].replace(/["']/g, ''),
         };
@@ -266,10 +270,14 @@ function compareSummary(want, got, team) {
     const cell = got[icon];
     const count = want[icon][team];
     // A team with none of this kind gets a blank cell, as in the original.
-    eq(cell.glyph, count ? glyphOf(icon) : '', team + ' ' + icon + ' glyph');
     eq(cell.count, count ? String(count) : '', team + ' ' + icon + ' count');
-    eq(cell.font, icon in PLANE_GLYPHS ? 'plane_icons' : 'Icons',
-      team + ' ' + icon + ' glyph font');
+    if (PLANES.includes(icon)) {
+      assert(count ? cell.path : !cell.path,
+        team + ' ' + icon + ' artwork should be ' + (count ? 'present' : 'absent'));
+      continue;
+    }
+    eq(cell.glyph, count ? glyphOf(icon) : '', team + ' ' + icon + ' glyph');
+    eq(cell.font, 'Icons', team + ' ' + icon + ' glyph font');
   }
 }
 
@@ -585,6 +593,23 @@ function compareSummary(want, got, team) {
       const got = await readSummary(page);
       compareSummary(want, got.blue, 'blue');
       compareSummary(want, got.red, 'red');
+    });
+
+    await test('the three aircraft silhouettes are distinct', async () => {
+      const paths = await page.evaluate(() => {
+        const out = {};
+        ['Fighter', 'Bomber', 'Assault'].forEach(icon => {
+          const cell = [...document.querySelectorAll('#wtm-mapsummary th')]
+            .find(th => th.title === icon);
+          out[icon] = cell ? (cell.querySelector('svg path') || {}).getAttribute?.('d') : null;
+        });
+        return out;
+      });
+      const seen = Object.values(paths);
+      for (const [icon, path] of Object.entries(paths)) {
+        assert(path, 'no artwork for ' + icon);
+      }
+      eq(new Set(seen).size, 3, 'the silhouettes are not all different');
     });
 
     await test('respawn bases are not counted as contacts', async () => {

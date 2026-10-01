@@ -1,15 +1,18 @@
 # WT map (userscript)
 
 A Greasemonkey/Violentmonkey/Tampermonkey script that enhances the browser-based
-map War Thunder serves on port 8111. It is a port of the [WT map Chrome
-extension](https://github.com/slikts/wtmap) by Reinis Ivanovs (slikts), which
-patches the same map code.
+map War Thunder serves on port 8111.
+
+It is a single self-contained file with no dependencies: the aircraft
+silhouettes are vector polygons defined in the script, the only font it uses is
+the map's own icon font (which the page already loads), and nothing belonging to
+anyone else is bundled or redistributed.
 
 ![the map with plane icons, the contact summary under the map and the state and indicator panels on the right](docs/screenshot.png)
 
-*Fighter (F-39), bomber (Ju 88) and attack aircraft (IL-2) are drawn with their
-heading; contacts that are off the map are pinned to the edge at 35% opacity.
-Below the map, a per-team count of every contact kind.*
+*Fighters, bombers and attack aircraft are drawn with their heading; contacts
+that are off the map are pinned to the edge at 35% opacity. Below the map, a
+per-team count of every contact kind.*
 
 ![the state and indicators tables, objectives and chat panels in the side column](docs/panels.png)
 
@@ -31,8 +34,9 @@ origin you open the map on.
 ## What it does
 
 * **Different icons per aircraft type** — fighters, bombers and attack aircraft
-  get their own silhouette instead of a letter, drawn from the original
-  extension's icon font, which is embedded in the script.
+  get their own silhouette instead of a letter. The outlines are drawn here as
+  polygons and filled onto the canvas, so they scale cleanly and there is no
+  font to load.
 * **Icons point where the aircraft points**, taken from the contact's heading.
 * **The map follows the player** (optional) and keeps the zoom level you chose,
   including across map changes and reloads.
@@ -110,14 +114,10 @@ for poking at things by hand.
 
 ## How it works
 
-The extension could not patch the map directly: a Chrome content script only
-sees the DOM, not the page's JavaScript. So it downloaded the map page, re-`eval`ed
-its scripts inside an extension page and hid the originals.
-
-A userscript injected into the page itself has no such restriction. This one
-runs at `document-start` in the page context (`@grant none`), intercepts
-`setInterval` so it can stop the map's own two timers, and then patches the
-functions the map defines:
+The script runs at `document-start` in the page's own JavaScript environment
+(`@grant none`), which is what lets it reach and patch the map's functions
+directly. It intercepts `setInterval` so it can stop the map's own two timers,
+and then patches what the map defines:
 
 | Patched | Effect |
 | --- | --- |
@@ -132,23 +132,44 @@ Panel drag/resize (`$.fn.draggable`/`resizable`/`sortable`) is disabled, since
 the layout is automatic. Everything the page defines with `var`/`function` is
 reached through `window.*`; the script declares no globals of its own.
 
-## Differences from the extension
+## What it depends on
 
-* The map is patched in place, so there is no separate extension page and no
-  `base_url` option; the script polls the origin of the page it runs on.
-* Chat, HUD messages and objectives are restyled into the side column instead
-  of being hidden, and can be switched off in the options.
+Nothing but the map page itself, and nothing that is redistributed here:
+
+| Asset | Where it comes from |
+| --- | --- |
+| Aircraft silhouettes | Polygons in `wtmap.user.js`, drawn to canvas and to inline SVG |
+| Ground unit and structure glyphs in the summary | The map's own icon font, referenced by family name; the page loads it from its own server |
+| Layout and stylesheet | Written for this script |
+| Map page, map image, endpoint payloads | The game's own files, only ever read at runtime, never copied into this repo |
+
+War Thunder is a trademark of Gaijin Entertainment; this project is not
+affiliated with or endorsed by them, and it patches only the page in your own
+browser at your own request.
+
+A browser extension by Reinis Ivanovs (slikts) existed first for the same map
+and is where the idea of aircraft icons on it comes from. Nothing from it is
+used here.
+
+## Notes on behaviour
+
+* Chat, HUD messages and objectives are restyled into the side column rather
+  than hidden, and can be switched off in the options.
 * The summary uses the map's full glyph mapping (`4`, `5`, `7`, `0`, `.`, …)
-  instead of only Air defence and Structure, and leaves out respawn bases,
-  which are spawn points rather than contacts.
-* Friendly green contacts were counted as enemies by the extension's
-  `r > b` rule; the rule now allows for the second friendly team's colour.
+  and leaves out respawn bases, which are spawn points rather than contacts: a
+  large ground battle sends over a hundred of them and they would swamp the
+  summary.
+* Respawn bases are still drawn on the map, as the game intends; only the
+  counts ignore them.
+* Friendly green contacts count as friendly. Judging by `r > b` alone, as a
+  naive rule does, files them as enemies.
 * Objectives and messages show empty when the map has nothing to report, and
   the state/indicator values are formatted (`412 km/h`, not `412.000000`).
 * Numbers in the options dialog are clamped to sane ranges.
-* A bug inherited from the extension is fixed: the contact sort returned a
-  boolean from its comparator, which `Array.prototype.sort` ignores, so
-  aircraft were not in fact drawn last.
+* The map's grid is not always at the origin: some maps span `1024..3072`
+  rather than `0..2048`, so sizes are always derived from the difference.
+* The aircraft artwork is drawn, not typeset: it scales to any icon size and
+  needs no font to be loaded before the first frame.
 
 ## Development
 
@@ -197,12 +218,15 @@ test/output/             screenshots (git ignored)
 
 ## Credits
 
-A userscript port of the [WT map Chrome extension](https://github.com/slikts/wtmap)
-by Reinis Ivanovs (slikts), MIT licensed. The plane glyphs are its icon font,
-embedded in `wtmap.user.js`, and the panel layout and CSS are adapted from the
-extension's own stylesheet.
+Everything here is original work: the aircraft silhouettes, the layout, the
+stylesheet and the patching. No code or artwork from anyone else is bundled or
+redistributed, and no licence file is attached.
 
 War Thunder is a trademark of Gaijin Entertainment; this project is not
 affiliated with or endorsed by them. The map page, its icons font and the
-endpoint payloads the test fixture serves are the game's own files and are not
-distributed here.
+endpoint payloads the test fixture serves are the game's own files: they are read
+at runtime from your own copy of the game, and are never committed to this
+repository.
+
+The idea of putting aircraft icons on the map came from a browser extension by
+Reinis Ivanovs (slikts) that did the same thing for the same page.
