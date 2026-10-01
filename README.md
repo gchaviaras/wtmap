@@ -119,7 +119,7 @@ ways, and **Full window fill** chooses which:
 * **Fill the window** (the default) makes the canvas as large as the window needs
   and lets the window crop the overflow. The map is magnified by the window's
   aspect ratio, fills it edge to edge with no bars, and you drag the map to reach
-  the rest of it. The wheel still zooms as usual.
+  the rest of it with the mouse or a finger. The wheel still zooms as usual.
 * **Keep the map square** shows the whole map with the spare width as page
   background.
 

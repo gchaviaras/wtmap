@@ -515,6 +515,12 @@ function compareSummary(want, got, team) {
 
     await test('full window mode fills the window without distorting the map', async () => {
       await set_fill('cover');
+      // Stated here rather than inherited: this test checks what a drag does to
+      // the follow, so the follow has to start on.
+      await page.evaluate(() => {
+        window.wtmap.settings.map_center = 1;
+        localStorage.setItem('wtmap_map_center', 1);
+      });
       await page.evaluate(() => window.wtmap.full_window());
       await sleep(300);
       const on = await layout();
@@ -583,6 +589,65 @@ function compareSummary(want, got, team) {
           assert(a === 255, `empty corner ${i} at ${w}x${h}, axis ${stop.axis}`)));
       }
       assert(on.captionVisible, 'the caption must stay reachable after resizing');
+    });
+
+    // A drag with the mouse has to move the map, and has to stay moved. In cover
+    // mode the map is cropped and the pan is what reaches the rest of it, so this
+    // is the case that matters; with the whole map on screen at zoom 1 the game's
+    // own clamp pins the pan to zero and there is nowhere to pan to.
+    await test('the map can be panned by dragging it with the mouse', async () => {
+      await set_fill('cover');
+      // Set rather than toggle: full_window() flips whatever it finds, and what
+      // it finds depends on the test before this one.
+      await set_full_window(true);
+      await sleep(300);
+      eq((await layout()).mode, 'window', 'the drag test needs cover mode');
+
+      const before = await page.evaluate(() => window.map_pan.slice());
+      const box = await (await page.$('#map-canvas')).boundingBox();
+      // Start well inside the window: the canvas is larger than the window here,
+      // so its box extends past the edges.
+      const x = box.x + 200;
+      const y = box.y + 200;
+      // Up and to the left, which is the way that reveals the cropped part: the
+      // map already reaches the top and the right edge of the window, so pulling
+      // it the other way would only show an edge, and the clamp rightly refuses.
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      // several steps, so this is a drag and not a click
+      await page.mouse.move(x - 35, y - 25, {steps: 4});
+      await page.mouse.move(x - 70, y - 45, {steps: 4});
+      const during = await page.evaluate(() => ({
+        pan: window.map_pan.slice(),
+        dragging: window.isDraggingMap,
+      }));
+      await page.mouse.up();
+
+      assert(during.pan[0] !== before[0] || during.pan[1] !== before[1],
+        'dragging did not move the map: still ' + JSON.stringify(during.pan));
+      // The map follows the pointer, so the pan moves by about the drag.
+      near(during.pan[1] - before[1], -45, 15, 'the map should follow the mouse');
+      eq(during.dragging, true, 'the map should know it is being dragged');
+
+      // Releasing the mouse must not snap it back to the player.
+      await sleep(400);
+      const after = await page.evaluate(() => ({
+        pan: window.map_pan.slice(),
+        dragging: window.isDraggingMap,
+      }));
+      near(after.pan[0], during.pan[0], 2, 'the pan should survive the release');
+      near(after.pan[1], during.pan[1], 2, 'the pan should survive the release');
+      eq(after.dragging, false, 'the drag flag should be cleared on release');
+
+      // And a pan must not be able to show an edge of the map.
+      const corners = await pan_to_the_corners();
+      for (const stop of corners.stops) {
+        stop.corners.forEach((a, i) =>
+          assert(a === 255, 'the map runs off its own edge at corner ' + i +
+            ' (axis ' + stop.axis + '): alpha ' + a));
+      }
+
+      await set_full_window(true);
     });
 
     await test('full window mode can leave the window free instead', async () => {

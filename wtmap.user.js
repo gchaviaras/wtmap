@@ -1180,6 +1180,51 @@
         _canvas = doc.getElementById('map-canvas');
         $(_canvas).appendTo(map.$contents);
 
+        // The map pans with touch only: the game configures Hammer with
+        // no_mouseevents, and its own mousedown handler is commented out in the
+        // page, so for anyone on a mouse or a trackpad the drag did nothing at
+        // all. Add one. The same gesture as the touch pan, so the map follows
+        // the pointer rather than moving against it.
+        var dragging = false;
+        var drag_x = 0;
+        var drag_y = 0;
+
+        _canvas.addEventListener('mousedown', function (e) {
+            if (e.button !== 0) {
+                return;
+            }
+            dragging = true;
+            drag_x = e.clientX;
+            drag_y = e.clientY;
+            // The follow and the cover mode both watch this flag to stand aside
+            // while the map is being moved by hand.
+            W.isDraggingMap = true;
+            e.preventDefault();
+        });
+
+        doc.addEventListener('mousemove', function (e) {
+            if (!dragging) {
+                return;
+            }
+            W.map_pan[0] += e.clientX - drag_x;
+            W.map_pan[1] += e.clientY - drag_y;
+            drag_x = e.clientX;
+            drag_y = e.clientY;
+            W.clampMapPan();
+            if (W.redraw_map) {
+                W.redraw_map(0.0);
+            }
+            e.preventDefault();
+        });
+
+        doc.addEventListener('mouseup', function () {
+            if (!dragging) {
+                return;
+            }
+            dragging = false;
+            W.isDraggingMap = false;
+        });
+
         $summary = $('<table id="wtm-mapsummary"></table>').appendTo(map.$contents);
         summary_rows = [doc.createElement('tr'), doc.createElement('tr')];
         summary_rows[0].id = 'wtm-bluerow';
