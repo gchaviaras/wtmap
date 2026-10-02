@@ -723,6 +723,37 @@ function compareSummary(want, got, team) {
       await sleep(200);
     });
 
+    // Fullscreen has no browser chrome to scroll past, so nothing may scroll.
+    // It did: the class carrying overflow: hidden was added for full window mode
+    // only, and the fullscreen layout fits with a few pixels to spare, so a
+    // slightly shorter window was enough to overflow and put a scrollbar over
+    // the map. Headless Chromium draws no scrollbar, which is why it took a
+    // browser that always draws them to notice.
+    await test('nothing scrolls when there is no browser chrome', async () => {
+      const overflow = () => page.evaluate(() =>
+        getComputedStyle(document.body).overflow);
+      // The test before this one left full window mode on, and that wins over
+      // the fullscreen panel modes.
+      await set_full_window(false);
+      for (const panels of ['column', 'overlay', 'hidden']) {
+        await set_fullscreen(true, panels);
+        await sleep(200);
+        eq(await overflow(), 'hidden',
+          panels + ': browser fullscreen must not scroll');
+        eq((await layout()).mode, panels, panels + ': fullscreen layout');
+      }
+      // Full window mode needs it just as much: the canvas is larger than the
+      // window there on purpose, and clipping it is the point of the mode.
+      await set_fullscreen(false);
+      await set_full_window(true);
+      await sleep(200);
+      eq(await overflow(), 'hidden', 'full window mode must not scroll');
+      await set_full_window(false);
+      // Back to a plain window, scrolling is the browser's business again.
+      await sleep(200);
+      eq(await overflow(), 'visible', 'a normal window may scroll');
+    });
+
     await test('full window mode is left with M or Escape', async () => {
       // The previous test left it on, so start from a known state.
       await set_full_window(false);

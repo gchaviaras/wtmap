@@ -1500,7 +1500,16 @@
         ['column', 'overlay', 'hidden', 'window'].forEach(function (m) {
             body.classList[mode === m ? 'add' : 'remove']('wtm-mode-' + m);
         });
-        body.classList[mode === 'window' ? 'add' : 'remove']('wtm-fullscreen-mode');
+        // The class carries overflow: hidden, which is wanted whenever there is no
+        // browser chrome to scroll past. It used to be added for full window
+        // mode only, which left browser fullscreen able to scroll: the layout
+        // fits with a few pixels to spare, so a slightly shorter window or one
+        // more row in the summary was enough to overflow, and a scrollbar then
+        // appeared over the map.
+        // Full window mode needs it just as much: the canvas is deliberately
+        // larger than the window there, and clipping it is the whole point.
+        body.classList[is_fullscreen() || mode === 'window'
+            ? 'add' : 'remove']('wtm-fullscreen-mode');
         if ($fs_button) {
             $fs_button.text(is_fullscreen() ? '\u25f1' : '\u26f6')
                 .attr('title', is_fullscreen() ? 'Leave fullscreen (F)' : 'Fullscreen (F)');
